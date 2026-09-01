@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+:root {
+  /* Default Theme (Classic) */
+  --color-bg: #18181b;
+  /* Zinc 950 */
+  --color-surface: #27272a;
+  /* Zinc 800 */
+  --color-text: #f4f4f5;
+  /* Zinc 100 */
+  --color-text-muted: #a1a1aa;
+  /* Zinc 400 - Contrast 5.0:1 on BG */
+  --color-primary: #10b981;
+  /* Emerald 500 */
+  --color-accent: #34d399;
+  /* Emerald 400 */
+}
+
+[data-theme="midnight"] {
+  --color-bg: #0b1120;
+  --color-surface: #1e293b;
+  --color-text: #e2e8f0;
+  --color-text-muted: #94a3b8;
+  /* Slate 400 - Contrast 5.8:1 on BG */
+  --color-primary: #6366f1;
+  --color-accent: #8b5cf6;
+}
+
+[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  /* Slate 500 - Contrast 4.5:1 on BG */
+  --color-primary: #2563eb;
+  --color-accent: #059669;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom classes for theme usage */
+.theme-bg {
+  background-color: var(--color-bg);
+}
+
+.theme-surface {
+  background-color: var(--color-surface);
+}
+
+.theme-text {
+  color: var(--color-text);
+}
+
+.theme-border {
+  border-color: var(--color-surface);
+}
+
+.theme-text-muted {
+  color: var(--color-text-muted);
+}
+
+/* Custom Scrollbar for better visibility */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #475569;
+  /* Slate 600 */
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #64748b;
+  /* Slate 500 */
+}
+
+.custom-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}

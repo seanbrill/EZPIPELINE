@@ -1,0 +1,29 @@
+{
+    "ports": {
+        "client": 5173,
+        "server": 5001
+    },
+    "paths": {
+        "data": "apps/server/data",
+        "logs": "apps/server/logs",
+        "sandbox": "apps/server/ai_sandbox"
+    },
+    "auth": {
+        "required": true,
+        "defaultUser": {
+            "username": "admin",
+            "isAdmin": true
+        }
+    },
+    "email": {
+        "enabled": false,
+        "host": "",
+        "port": 587,
+        "secure": false,
+        "from": "",
+        "auth": {
+            "user": "",
+            "pass": ""
+        }
+    }
+}

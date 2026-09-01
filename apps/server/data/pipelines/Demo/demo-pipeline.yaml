@@ -1,0 +1,74 @@
+id: "demo-pipeline-001"
+appName: "Demo Pipeline with 10 Steps"
+description: "A demonstration pipeline showcasing 10 dummy build steps"
+
+steps:
+  - name: "Step 1: Initialize Environment"
+    shell: /bin/bash
+    run: |
+      echo "Initializing build environment..."
+      sleep 1
+      echo "Environment initialized successfully"
+
+  - name: "Step 2: Fetch Dependencies"
+    shell: /bin/bash
+    run: |
+      echo "Fetching project dependencies..."
+      sleep 1
+      echo "Dependencies fetched"
+
+  - name: "Step 3: Compile Source Code"
+    shell: /bin/bash
+    run: |
+      echo "Compiling source code..."
+      sleep 1
+      echo "Compilation completed"
+
+  - name: "Step 4: Run Unit Tests"
+    shell: /bin/bash
+    run: |
+      echo "Running unit tests..."
+      sleep 1
+      echo "All tests passed"
+
+  - name: "Step 5: Static Code Analysis"
+    shell: /bin/bash
+    run: |
+      echo "Performing static code analysis..."
+      sleep 1
+      echo "Code quality check passed"
+
+  - name: "Step 6: Build Docker Image"
+    shell: /bin/bash
+    run: |
+      echo "Building Docker image..."
+      sleep 1
+      echo "Docker image built successfully"
+
+  - name: "Step 7: Security Scan"
+    shell: /bin/bash
+    run: |
+      echo "Running security vulnerability scan..."
+      sleep 1
+      echo "No vulnerabilities detected"
+
+  - name: "Step 8: Integration Tests"
+    shell: /bin/bash
+    run: |
+      echo "Running integration tests..."
+      sleep 1
+      echo "Integration tests passed"
+
+  - name: "Step 9: Package Artifacts"
+    shell: /bin/bash
+    run: |
+      echo "Packaging build artifacts..."
+      sleep 1
+      echo "Artifacts packaged"
+
+  - name: "Step 10: Deploy to Staging"
+    shell: /bin/bash
+    run: |
+      echo "Deploying to staging environment..."
+      sleep 1
+      echo "Deployment completed successfully"

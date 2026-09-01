@@ -1,0 +1,1207 @@
+import * as fs from "fs";
+import path from "path";
+import { parse } from "yaml";
+import { KubernetesConfig } from "../types/yaml";
+
+// Interface for Logger compatibility
+interface ILogger {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string, error?: any): void;
+}
+
+export interface EZPIPELINEYAML {
+  id: string;
+  appName: string;
+  version: string;
+  description: string;
+  steps: Step[];
+  env?: string;
+  kubernetes?: KubernetesConfig;
+  group?: string;
+  filePath?: string; // Added for frontend management
+  requireConfirmation?: boolean; // Require confirmation before running
+}
+
+export interface Step {
+  name: string;
+  run: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  continueOnError?: boolean;
+  shell?: string;
+  type?: string;
+  description?: string;
+}
+
+export interface BuildStepHistory {
+  name: string;
+  status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
+  startTime?: Date;
+  endTime?: Date;
+  duration?: number; // in milliseconds
+}
+
+export interface BuildHistoryEntry {
+  buildNumber: number;
+  pipelineName: string;
+  pipelineId: string;
+  targetName?: string;
+  group: string;
+  status: 'success' | 'failed' | 'running' | 'aborted';
+  startTime: Date;
+  endTime?: Date;
+  duration?: number; // in milliseconds
+  steps: BuildStepHistory[];
+  triggeredBy: string;
+  id?: string;
+  activeStep?: string;
+}
+
+import { execSync, spawn } from "child_process";
+import { PluginManager } from "../services/PluginManager.js";
+
+import dotenv from "dotenv";
+import Logger from "./Logger.js";
+import { Build } from "../types/other";
+import { VersioningService } from "../services/VersioningService.js";
+import { BuildService } from "../services/BuildService.js";
+import { EventEmitter } from "events";
+
+// Serve static files (adjust paths as needed)
+import { fileURLToPath } from "url";
+import { PIPELINES_DIR } from "../config/index.js";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "../../"); // apps/server root
+
+export default class EZPipelineController extends EventEmitter {
+  static instance: EZPipelineController;
+  public targets: EZPIPELINEYAML[] = [];
+  public builds: Build[] = [];
+  // public buildIndex: number = 0; // Removed
+  private logger = Logger.getInstance();
+  private buildService = BuildService.getInstance();
+
+  // Build history storage (delegated to BuildService)
+  // private buildHistory: BuildHistoryEntry[] = []; // Removed in-memory storage
+  private buildNumberCounter: number = 1;
+  // private readonly MAX_HISTORY_SIZE = 100;
+
+  constructor() {
+    super();
+    EZPipelineController.instance = this;
+    this.initialize();
+  }
+
+  //#region private methods
+
+  private initialize() {
+    this.refreshTargets();
+  }
+
+  // Build history management methods
+  public addBuildHistory(entry: BuildHistoryEntry) {
+    // No-op for now, as we rely on BuildService.createBuild(). 
+    // If we wanted to track step history in DB we would add it here.
+    this.logger.info(`📊 Build history updated: #${entry.buildNumber} ${entry.pipelineName} - ${entry.status}`);
+  }
+
+  public clearBuildHistory(group?: string) {
+    if (group) {
+      // Find all targets in this group
+      const groupTargets = this.targets.filter(t => {
+        const tGroup = t.group || "General";
+        return tGroup === group || tGroup.startsWith(`${group}/`);
+      }).map(t => t.id);
+
+      this.buildService.clearBuildsByTargets(groupTargets);
+    } else {
+      this.buildService.clearBuildHistory(); // Clear all
+    }
+  }
+
+  public clearPipelineHistory(pipelineId: string) {
+    this.buildService.clearBuildHistory(pipelineId);
+  }
+
+  public getBuildHistory(group?: string): BuildHistoryEntry[] {
+    const rawBuilds = this.buildService.getRecentBuilds(100);
+
+    // Map to BuildHistoryEntry
+    let entries: BuildHistoryEntry[] = rawBuilds.map(b => {
+      const pipeline = this.targets.find(t => t.id === b.target);
+
+      // Calculate Total Duration & Parse Timings
+      let totalDuration = 0;
+      let timings: Record<string, any> = {};
+      const timingsString = (b as any).step_timings;
+      if (timingsString) {
+        try {
+          timings = JSON.parse(timingsString);
+        } catch (e) { }
+      }
+
+      if (pipeline) {
+        pipeline.steps.forEach(step => {
+          if (step.type === 'approval') return;
+          const stepTime = timings[step.name];
+          if (stepTime && typeof stepTime.duration === 'number') {
+            totalDuration += stepTime.duration;
+          }
+        });
+      }
+
+      const activeStepName = (b as any).active_step;
+
+      return {
+        id: b.id,
+        buildNumber: (b as any).build_number || 0,
+        pipelineName: pipeline ? pipeline.appName : b.target,
+        pipelineId: b.target,
+        group: pipeline?.group || '',
+        status: b.status as any,
+        startTime: new Date(b.started_at),
+        endTime: b.ended_at ? new Date(b.ended_at) : undefined,
+        triggeredBy: 'manual',
+        activeStep: activeStepName,
+        duration: totalDuration,
+        steps: pipeline ? pipeline.steps.map((s, index) => {
+          let stepStatus: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'error' = 'pending';
+          const activeIndex = activeStepName ? pipeline.steps.findIndex(step => step.name === activeStepName) : -1;
+
+          if (b.status === 'success') {
+            stepStatus = 'success';
+          } else if (b.status === 'failed' || b.status === 'aborted' || b.status === 'error' || b.status === 'running' || b.status === 'paused') {
+            if (activeIndex !== -1) {
+              if (index < activeIndex) stepStatus = 'success';
+              else if (index === activeIndex) {
+                if (b.status === 'failed') stepStatus = 'failed';
+                else if (b.status === 'error') stepStatus = 'error';
+                else if (b.status === 'paused' && s.type === 'approval') stepStatus = 'running';
+                else stepStatus = 'running';
+              } else {
+                stepStatus = 'pending';
+              }
+            } else if ((b.status === 'failed' || b.status === 'error') && timings[s.name]?.status) {
+              stepStatus = timings[s.name].status;
+            }
+          }
+
+          let stepDuration: number | undefined = undefined;
+          if (timings[s.name]) {
+            stepDuration = timings[s.name].duration;
+          }
+
+          return {
+            name: s.name,
+            status: stepStatus,
+            duration: stepDuration
+          };
+        }) : []
+      };
+    });
+
+    if (group) {
+      entries = entries.filter(entry => entry.group === group || (entry.group && entry.group.startsWith(`${group}/`)));
+    }
+
+    return entries;
+  }
+
+  public getNextBuildNumber(): number {
+    return this.buildNumberCounter++;
+  }
+
+  public refreshTargets() {
+    const pipelinesDir = path.resolve(PROJECT_ROOT, "data/pipelines");
+
+    // Create default structure if not exists
+    if (!fs.existsSync(pipelinesDir)) {
+      // Don't enforce General folder
+      // const generalDir = path.join(pipelinesDir, "General");
+      // fs.mkdirSync(generalDir, { recursive: true });
+    }
+
+    const getPipelines = (dir: string): { configPath: string, group: string }[] => {
+      let results: { configPath: string, group: string }[] = [];
+      if (!fs.existsSync(dir)) return [];
+
+      const items = fs.readdirSync(dir, { withFileTypes: true });
+      const isPipeline = items.some(i => i.name === '.pipeline');
+
+      if (isPipeline) {
+        // Found a pipeline bundle
+        let configName = 'pipeline.yaml';
+        if (!items.some(i => i.name === 'pipeline.yaml')) {
+          const anyYaml = items.find(i => i.name.endsWith('.yaml') || i.name.endsWith('.yml'));
+          if (anyYaml) configName = anyYaml.name;
+        }
+
+        const configPath = path.join(dir, configName);
+        if (fs.existsSync(configPath)) {
+          // Group: Rel path from pipelinesDir to parent of this bundle
+          const parentDir = path.dirname(dir);
+          let group = path.relative(pipelinesDir, parentDir);
+          if (group === '.') group = '';
+          if (!group) group = ''; // Explicitly allow empty for root
+
+          results.push({ configPath, group });
+        }
+        return results;
+      }
+
+      // Recurse
+      items.forEach(item => {
+        if (item.isDirectory()) {
+          // Skip internal folders if they accidentally exist in root (like 'node_modules'?? unlikely in data/pipelines)
+          results = results.concat(getPipelines(path.join(dir, item.name)));
+        }
+      });
+
+      return results;
+    };
+
+    const found = getPipelines(pipelinesDir);
+
+    // Legacy Fallback: scan for flat yaml files in 'yaml' folders if no pipelines found? 
+    // Or just support mixed mode by also scanning for 'yaml' folders only if isPipeline is false.
+    // The recursive function above skips children if isPipeline is true. 
+    // If isPipeline is false, it recurses.
+    // Use legacy logic inside the generic recursion?
+
+    // Let's refine the scanner to support legacy 'yaml' folders for now too.
+    // Check if dir name is 'yaml'. If so, all yamls inside are pipelines.
+
+    const getPipelinesMixed = (dir: string): { configPath: string, group: string }[] => {
+      let results: { configPath: string, group: string }[] = [];
+      if (!fs.existsSync(dir)) return [];
+
+      const items = fs.readdirSync(dir, { withFileTypes: true });
+      const isPipeline = items.some(i => i.name === '.pipeline');
+
+      if (isPipeline) {
+        let configName = 'pipeline.yaml';
+        if (!items.some(i => i.name === 'pipeline.yaml')) {
+          const anyYaml = items.find(i => i.name.endsWith('.yaml') || i.name.endsWith('.yml'));
+          if (anyYaml) configName = anyYaml.name;
+        }
+        const configPath = path.join(dir, configName);
+        if (fs.existsSync(configPath)) {
+          const parentDir = path.dirname(dir);
+          let group = path.relative(pipelinesDir, parentDir);
+          // Cleanup group name
+          if (group === '.') group = '';
+          results.push({ configPath, group });
+        }
+        return results;
+      }
+
+      // Legacy check: Is this a 'yaml' folder?
+      if (path.basename(dir) === 'yaml') {
+        // All yamls here are legacy pipelines
+        items.forEach(i => {
+          if (i.isFile() && (i.name.endsWith('.yaml') || i.name.endsWith('.yml'))) {
+            const parentDir = path.dirname(dir); // e.g. .../General/yaml -> .../General
+            let group = path.relative(pipelinesDir, parentDir);
+            if (group === '.') group = '';
+            results.push({ configPath: path.join(dir, i.name), group });
+          }
+        });
+        return results;
+      }
+
+      // Check for loose YAML files in this directory (not in a 'yaml' subfolder)
+      items.forEach(i => {
+        if (i.isFile() && (i.name.endsWith('.yaml') || i.name.endsWith('.yml'))) {
+          // Calculate group as the full path from pipelinesDir to this directory
+          let group = path.relative(pipelinesDir, dir);
+          if (group === '.') group = '';
+          if (!group) group = '';
+          results.push({ configPath: path.join(dir, i.name), group });
+        }
+      });
+
+      // Recurse
+      items.forEach(item => {
+        if (item.isDirectory()) {
+          results = results.concat(getPipelinesMixed(path.join(dir, item.name)));
+        }
+      });
+      return results;
+    };
+
+    const files = getPipelinesMixed(pipelinesDir);
+
+    this.targets = files.map(file => {
+      const content = fs.readFileSync(file.configPath, "utf8");
+      let parsed: EZPIPELINEYAML;
+      try {
+        const firstDoc = content.split('\n---')[0];
+        parsed = parse(firstDoc) as EZPIPELINEYAML;
+      } catch (e: any) {
+        return null;
+      }
+
+      if (parsed) {
+        parsed.group = file.group;
+        parsed.filePath = file.configPath;
+      }
+      return parsed;
+    }).filter(p => p !== null && p !== undefined) as EZPIPELINEYAML[];
+
+    this.logger.info(`Loaded ${this.targets.length} pipelines from ${pipelinesDir}`);
+  }
+
+  private processK8Templates() {
+    const k8sDir = path.resolve(PROJECT_ROOT, "yaml/k8s");
+    const outputDir = path.resolve(PROJECT_ROOT, "pipeline_workspace/PIPELINE_OUTPUT/yaml");
+
+    if (!fs.existsSync(k8sDir)) {
+      this.logger.warn(`Kubernetes YAML directory not found: ${k8sDir}`);
+      return;
+    }
+
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const k8sFiles = fs
+      .readdirSync(k8sDir)
+      .filter(file => file.endsWith(".yaml") || file.endsWith(".yml"));
+
+    for (const file of k8sFiles) {
+      const filePath = path.join(k8sDir, file);
+      const rawContent = fs.readFileSync(filePath, "utf8");
+
+      const interpolated = this.interpolateEnv(rawContent, process.env);
+      const outputFilePath = path.join(outputDir, file);
+
+      fs.writeFileSync(outputFilePath, interpolated, "utf8");
+      this.logger.info(`Rendered ${file} -> ${outputFilePath}`);
+    }
+  }
+
+  private interpolateEnv(
+    command: string,
+    env: NodeJS.ProcessEnv,
+    shell: string | undefined = undefined
+  ) {
+    // First, handle special ${RESOURCES/...} pattern
+    let result = command.replace(/\$\{RESOURCES\/([^}]+)\}/g, (match, filename) => {
+      const resourcesDir = env['RESOURCES'];
+      if (resourcesDir) {
+        const fullPath = path.join(resourcesDir, filename);
+        // Quote the path if it contains spaces or special shell characters
+        if (/[\s()&|;<>]/.test(fullPath)) {
+          return `"${fullPath}"`;
+        }
+        return fullPath;
+      }
+      return match; // Return original if RESOURCES not set
+    });
+
+    // Then interpolate standard ${VAR} patterns
+    result = result.replace(/\$\{(\w+)\}/g, (_, key) => {
+      const value = env[key] ?? "";
+      // Quote paths that contain spaces or special shell characters
+      // This is especially important for ENV_FILE and similar path variables
+      if (value && /[\s()&|;<>]/.test(value)) {
+        return `"${value}"`;
+      }
+      return value;
+    });
+
+    return result;
+  }
+
+  private runCommandLive(
+    command: string,
+    logger: ILogger,
+    cwd: string | undefined,
+    env?: NodeJS.ProcessEnv,
+    shell?: string | undefined
+  ): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const interpolatedCommand = this.interpolateEnv(
+        command,
+        env ?? {},
+        shell
+      );
+
+      // Parse command into parts, respecting quotes and escapes
+      const parts: string[] = [];
+      let current = '';
+      let inQuote = false;
+      let quoteChar = '';
+      let escaped = false;
+
+      for (let i = 0; i < interpolatedCommand.length; i++) {
+        const char = interpolatedCommand[i];
+
+        if (escaped) {
+          current += char;
+          escaped = false;
+          continue;
+        }
+
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+
+        if ((char === '"' || char === "'") && !inQuote) {
+          inQuote = true;
+          quoteChar = char;
+          continue;
+        }
+
+        if (char === quoteChar && inQuote) {
+          inQuote = false;
+          quoteChar = '';
+          continue;
+        }
+
+        if (char === ' ' && !inQuote) {
+          if (current) {
+            parts.push(current);
+            current = '';
+          }
+          continue;
+        }
+
+        current += char;
+      }
+
+      if (current) {
+        parts.push(current);
+      }
+
+      const cmd = parts[0];
+      const args = parts.slice(1);
+
+      // Resolve path
+      let resolvedCwd: string;
+
+      if (cwd && path.isAbsolute(cwd)) {
+        resolvedCwd = cwd;
+      } else {
+        // Fallback or relative to default workspace (legacy support or relative steps)
+        // If cwd is "root", ensure we mean project root
+        if (cwd === "root") {
+          resolvedCwd = PROJECT_ROOT;
+        } else {
+          // Default to PIPELINE_OUTPUT for backward compatibility if logic elsewhere depends on it, 
+          // BUT since we are shifting architecture, maybe we shouldn't.
+          // However, the `run` method determines the correct absolute CWD now. 
+          // So if `cwd` is passed from `run`, it is mostly intended to be respected.
+          // If `run` is passing a relative path (failed logic), this catches it.
+          // Let's assume relative to PIPELINE_OUTPUT as fallback? 
+          // OR relative to process.cwd()?
+          // Given the refactor, let's make it relative to the PIPELINE_OUTPUT default if likely.
+          resolvedCwd = path.join(PROJECT_ROOT, "pipeline_workspace/PIPELINE_OUTPUT", cwd || "");
+        }
+      }
+
+      // DEBUG LOGGING
+      logger.info(`[DEBUG] Executing: '${cmd}' with args: [${args.join(", ")}]`);
+      logger.info(`[DEBUG] CWD: ${resolvedCwd}`);
+
+      // Ensure directory exists
+      if (!fs.existsSync(resolvedCwd)) {
+        logger.warn(`[WARN] CWD does not exist, creating: ${resolvedCwd}`);
+        fs.mkdirSync(resolvedCwd, { recursive: true });
+      }
+
+      // When using shell, pass the full command as a string to preserve quoting
+      // Otherwise, spawn reconstructs it and loses our careful quote handling
+      const useShell = shell ?? true;
+      const child = useShell
+        ? spawn(interpolatedCommand, [], {
+          cwd: resolvedCwd,
+          env,
+          shell: true,
+          windowsHide: true,
+        })
+        : spawn(cmd, args, {
+          cwd: resolvedCwd,
+          env,
+          shell: false,
+          windowsHide: true,
+        });
+
+      child.stdout.on("data", data => {
+        logger.info(data.toString().trim());
+      });
+
+      child.stderr.on("data", data => {
+        // Some tools print info to stderr, so we log as info or warn depending on severity expectation
+        // But for visibility, let's keep it as error or info
+        logger.info(`[STDERR] ${data.toString().trim()}`);
+      });
+
+      child.on("error", (err) => {
+        logger.error(`[SPAWN ERROR] Failed to start command: ${cmd}`, err);
+        reject(err);
+      });
+
+      child.on("close", code => {
+        logger.info(`[DEBUG] Command finished with code ${code}`);
+        if (code === 0) resolve(code);
+        else reject(new Error(`Command failed with exit code ${code}`));
+      });
+    });
+  }
+
+
+  public start_build(build: EZPIPELINEYAML): Build {
+    const buildId = this.buildService.createBuild(build.id, build.version);
+
+    let new_build: Build = {
+      id: buildId,
+      target: build?.id as string,
+      status: 'running',
+      steps: build.steps.map(step => step.name),
+      activeStep: build.steps[0].name,
+      version: build.version,
+      percentage: 0,
+      started: new Date(),
+      ended: undefined,
+      isAborted: false,
+      stepTimings: {} // Initialize
+    };
+
+    // track this build in memory (optional, or just for active status)
+    this.builds.push(new_build);
+    return new_build;
+  }
+
+  private build_error(build: Build, error: Error) {
+    build.ended = new Date();
+    build.error = error.message;
+    this.buildService.updateBuild(build.id, { error: error.message, ended: build.ended, status: 'failed' });
+  }
+
+  public clear_builds() {
+    this.builds = []; // Only clears memory, DB persists
+  }
+
+
+  //#endregion
+
+  //#region public methods
+  public static initialize() {
+    new EZPipelineController();
+
+    //check for templates in the k8s folder and replace any ${ENV_VARS} with the value
+  }
+
+  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean } = {}) {
+    let pipeline = this.targets.find(t => t.id === pipelineId);
+
+    if (options.customYaml) {
+      try {
+        const parsed = parse(options.customYaml) as EZPIPELINEYAML;
+        // If original pipeline exists, inherit location for resource resolution
+        if (pipeline) {
+          parsed.filePath = pipeline.filePath;
+          parsed.group = pipeline.group;
+        }
+        pipeline = parsed;
+      } catch (e) {
+        throw new Error(`Failed to parse custom YAML: ${e}`);
+      }
+    }
+
+    if (!pipeline) {
+      throw new Error(`Pipeline with id '${pipelineId}' not found.`);
+    }
+
+    // Determine Mode and Directories
+    // Default to Legacy Mode first - Use dedicated folder in PIPELINES_DIR to avoid root clutter
+    const baseWorkspaceDir = path.join(PIPELINES_DIR, "_legacy_workspaces");
+    let pipelineDir = path.join(baseWorkspaceDir, pipelineId);
+    let workspaceDir = path.join(pipelineDir, "workspace");
+    let buildsDir = path.join(pipelineDir, "builds");
+    let resourceSourceDir: string | undefined;
+    let isBundle = false;
+
+    if (pipeline.filePath) {
+      const yamlDir = path.dirname(pipeline.filePath);
+      // Default legacy resource source
+      resourceSourceDir = path.join(yamlDir, 'resources');
+
+      if (fs.existsSync(path.join(yamlDir, '.pipeline'))) {
+        isBundle = true;
+        pipelineDir = yamlDir;
+        workspaceDir = path.join(pipelineDir, 'workspace');
+        buildsDir = path.join(pipelineDir, 'build-history');
+        resourceSourceDir = path.join(pipelineDir, 'resources');
+      }
+    }
+
+    // Override workspace if provided
+    if (options.customWorkspace) {
+      workspaceDir = options.customWorkspace;
+    }
+
+    // 1. Prepare Directories
+    // We want to Clean the WORKSPACE, but KEEP the BUILDS.
+    if (!options.skipClean && fs.existsSync(workspaceDir)) {
+      try {
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
+      } catch (e) {
+        this.logger.error(`Failed to clean workspace ${workspaceDir}`, e);
+      }
+    }
+
+    // Ensure parent dirs exist if needed (Legacy needs pipelineDir created, Bundle likely exists)
+    if (!isBundle) {
+      fs.mkdirSync(pipelineDir, { recursive: true });
+    }
+
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(buildsDir, { recursive: true });
+
+    // 2. Track Build
+    let build = existingBuild || this.start_build(pipeline);
+
+    // Build specific directory: .../builds/<buildId>
+    const buildDir = path.join(buildsDir, build.id);
+    fs.mkdirSync(buildDir, { recursive: true });
+
+    const logFilePath = path.join(buildDir, "build.log");
+    const metaFilePath = path.join(buildDir, "build.json");
+
+    // Persist initial build metadata
+    fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
+
+    // 3. Setup Logging
+    const fileLog = (msg: string) => {
+      try {
+        fs.appendFileSync(logFilePath, msg + '\n');
+      } catch (e) {
+        console.error("Failed to write to log file", e);
+      }
+    };
+
+    const buildLogger: ILogger = {
+      info: (msg: string) => {
+        const safeMsg = this.logger.redact(msg);
+        this.logger.info(msg); // Logger handles its own redaction, but broadcast needs safe? info() calls redact inside.
+        // Wait, Logger.info calls winston.info(redact(msg)). So passing RAW msg is correct for .info().
+        // BUT buildService.log and fileLog take RAW strings. They need help.
+
+        this.buildService.log(build.id, safeMsg);
+        fileLog(`[INFO] ${safeMsg}`);
+      },
+      warn: (msg: string) => {
+        const safeMsg = this.logger.redact(msg);
+        this.logger.warn(msg);
+        this.buildService.log(build.id, safeMsg);
+        fileLog(`[WARN] ${safeMsg}`);
+      },
+      error: (msg: string, err?: any) => {
+        const fullMsg = `${msg} ${err ? err.toString() : ''}`;
+        const safeMsg = this.logger.redact(fullMsg);
+        this.logger.error(msg, err);
+        this.buildService.log(build.id, safeMsg);
+        fileLog(`[ERROR] ${safeMsg}`);
+      }
+    };
+
+    // 4. Resource & Env Setup
+    let resourceEnv: Record<string, string> = {};
+    resourceEnv['WORKSPACE'] = workspaceDir;
+    let envFilePath: string | undefined; // Track env file path for ENV_FILE variable
+
+    // Handle Resources
+    if (resourceSourceDir) {
+      const targetResourceDir = path.join(workspaceDir, 'resources');
+
+      if (fs.existsSync(resourceSourceDir)) {
+        buildLogger.info(`Copying resources from ${resourceSourceDir} to ${targetResourceDir}`);
+        try {
+          fs.cpSync(resourceSourceDir, targetResourceDir, { recursive: true });
+          resourceEnv['RESOURCES'] = targetResourceDir;
+
+          // Fix permissions for private keys (id_rsa, *.pem, *.key) to be 600
+          // otherwise scp/ssh will complain about unprotected private key file
+          const fixKeyPermissions = (dir: string) => {
+            const files = fs.readdirSync(dir);
+            for (const file of files) {
+              const fullPath = path.join(dir, file);
+              const stat = fs.statSync(fullPath);
+              if (stat.isDirectory()) {
+                fixKeyPermissions(fullPath);
+              } else if (file.endsWith('.pem') || file.endsWith('.key') || file === 'id_rsa') {
+                fs.chmodSync(fullPath, 0o600);
+                buildLogger.info(`Fixed permissions for key file: ${file}`);
+              }
+            }
+          };
+          fixKeyPermissions(targetResourceDir);
+
+        } catch (e) {
+          buildLogger.error("Failed to copy resources", e);
+        }
+      } else {
+        // Create empty resources dir
+        fs.mkdirSync(targetResourceDir, { recursive: true });
+        resourceEnv['RESOURCES'] = targetResourceDir;
+      }
+    }
+
+    // Handle Env Vars
+    if (pipeline.filePath) {
+      const yamlDir = path.dirname(pipeline.filePath);
+      const envName = pipeline.id;
+
+      const loadEnv = (p: string) => {
+        if (fs.existsSync(p)) {
+          buildLogger.info(`Loading env file: ${p}`);
+          envFilePath = p; // Store the path for ENV_FILE variable
+          const envConfig = dotenv.parse(fs.readFileSync(p));
+
+          // Register secrets
+          const secrets = Object.values(envConfig).filter(v => v.length >= 3);
+          this.logger.registerSecrets(secrets);
+
+          for (const k in envConfig) {
+            process.env[k] = envConfig[k];
+          }
+          return true;
+        }
+        return false;
+      };
+
+      if (isBundle) {
+        // Bundle: Check .env then .env.<target>
+        // Try strict .env first
+        if (!loadEnv(path.join(yamlDir, '.env'))) {
+          loadEnv(path.join(yamlDir, `.env.${envName}`));
+        }
+      } else {
+        // Legacy
+        const projectRoot = path.dirname(yamlDir);
+        if (!loadEnv(path.join(projectRoot, 'env', `.env.${envName}`))) {
+          loadEnv(path.join(yamlDir, `.env.${envName}`));
+        }
+      }
+    }
+
+    // Add ENV_FILE to resourceEnv if we loaded an env file
+    if (envFilePath) {
+      resourceEnv['ENV_FILE'] = envFilePath;
+    }
+
+    // apply env variables to any k8s yaml (blocking non-async)
+    this.processK8Templates();
+
+    buildLogger.info(
+      `\n🚀 Running pipeline: ${pipeline.appName} (${pipeline.version}) - ${pipeline.description}`
+    );
+    buildLogger.info(`📂 Workspace: ${workspaceDir}`);
+    if (resourceEnv['RESOURCES']) {
+      buildLogger.info(`📂 Resources: ${resourceEnv['RESOURCES']}`);
+    }
+
+
+    // Note: We used to create/fetch a BuildHistoryEntry here (in-memory). 
+    // Now we rely on BuildService (DB) and the 'build' object state.
+
+    this.emit("build_start", build);
+
+
+    // Main Pipeline Magic
+    for (let i = 0; i < pipeline.steps.length; i++) {
+      const currentStep = pipeline.steps[i];
+      try {
+        // Abort build check
+        if (build.isAborted === true) {
+          build.ended = new Date();
+          // Record abort
+          this.buildService.updateBuild(build.id, { isAborted: true, ended: build.ended, status: 'aborted' });
+
+          buildLogger.info(`❌ Build Was Aborted`);
+          this.emit("build_aborted", build); // ensure event is emitted if not already
+          break;
+        }
+
+        // Check if step completed (Resume logic)
+        const activeStepIndex = build.activeStep ? pipeline.steps.findIndex(s => s.name === build.activeStep) : -1;
+        const currentStepIdx = i;
+
+        if (activeStepIndex !== -1 && currentStepIdx < activeStepIndex) {
+          buildLogger.info(`⏭️ Skipping completed step: ${currentStep.name}`);
+          continue;
+        }
+
+        // Determine CWD for step
+        let currentCwd = workspaceDir;
+        if (currentStep.cwd) {
+          if (currentStep.cwd === 'root') currentCwd = PROJECT_ROOT; // Use PROJECT_ROOT for 'root'
+          else currentCwd = path.join(workspaceDir, currentStep.cwd);
+        }
+
+        // Update build info
+        build.activeStep = currentStep.name;
+        build.percentage = Math.round(((i + 1) / pipeline.steps.length) * 100);
+
+        // Start Timing
+        if (!build.stepTimings) build.stepTimings = {};
+        build.stepTimings[currentStep.name] = {
+          start: new Date().getTime(),
+          status: 'running'
+        };
+
+        // Update DB
+        this.buildService.updateBuild(build.id, {
+          activeStep: build.activeStep,
+          percentage: build.percentage,
+          stepTimings: build.stepTimings
+        });
+        // Update Metadata File
+        fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
+
+        this.emit("progress", build);
+
+        buildLogger.info(
+          `\n🔧 Step: ${currentStep.name} -> ${currentCwd}> cmd: "${currentStep.run}"`
+        );
+
+        // Prepare environment variables for the step
+        const pluginPaths = PluginManager.getInstance().getPluginBinPaths();
+        const currentPath = process.env.PATH || '';
+        const newPath = [...pluginPaths, currentPath].join(path.delimiter);
+
+        const envVars = {
+          ...process.env,
+          PATH: newPath, // Override PATH
+          ...resourceEnv, // Inject RESOURCES
+          ...currentStep.env,
+          // Inject Standard Pipeline Variables
+          PIPELINE_ID: pipeline.id,
+          PIPELINE_NAME: pipeline.appName,
+          TARGET_NAME: pipeline.id, // Legacy support, aliased to ID
+          BUILD_ID: build.id.toString(),
+          // Force headless/non-interactive mode for all commands
+          GIT_TERMINAL_PROMPT: '0',           // Disable Git interactive prompts
+          GIT_ASKPASS: 'echo',                // Prevent Git credential helper dialogs
+          GCM_INTERACTIVE: 'never',           // Disable Git Credential Manager UI
+          DEBIAN_FRONTEND: 'noninteractive',  // Disable apt-get prompts
+          CI: 'true',                         // Many tools check this for headless mode
+          TERM: 'dumb',                       // Disable fancy terminal features
+        };
+
+        // Check for special step types
+        if (currentStep.type === 'approval') {
+          buildLogger.info(`\n🔔 Step '${currentStep.name}' is an Approval Gate.`);
+          buildLogger.info(`⏸️ Waiting for user approval...`);
+
+          // Mark step as pending approval
+          if (build.stepTimings && build.stepTimings[currentStep.name]) {
+            build.stepTimings[currentStep.name].status = 'pending';
+            this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings, status: 'paused' });
+          }
+          fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
+          this.emit("build_paused", build);
+          return; // Pause execution, controller will resume via approveBuild
+        }
+
+        // Execute Step
+        await this.runCommandLive(
+          currentStep.run,
+          buildLogger, // Pass proxy logger
+          currentCwd, // Pass calculated absolute path
+          envVars,
+          currentStep.shell
+        );
+
+        // End Timing Success
+        if (build.stepTimings && build.stepTimings[currentStep.name]) {
+          const end = new Date().getTime();
+          build.stepTimings[currentStep.name].end = end;
+          build.stepTimings[currentStep.name].duration = end - build.stepTimings[currentStep.name].start;
+          build.stepTimings[currentStep.name].status = 'success';
+          this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
+        }
+
+        // If this was the last step, finalize the build
+        if (i === pipeline.steps.length - 1) {
+          build.ended = new Date();
+          build.activeStep = undefined;
+          this.buildService.updateBuild(build.id, { percentage: 100, ended: build.ended, activeStep: undefined, status: 'success' });
+          fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
+
+          buildLogger.info(`\n📦 Archiving build artifacts...`);
+          try {
+            VersioningService.getInstance().archiveBuild(pipelineDir, pipeline.appName, pipeline.version, workspaceDir);
+          } catch (archErr) {
+            this.logger.error(`❌ Versioning failed but build succeeded.`, archErr as Error);
+            this.buildService.log(build.id, `❌ Versioning failed: ${archErr}`);
+          }
+          this.emit("build_complete", build);
+        }
+
+      } catch (error) {
+        // End Timing Failed
+        if (build.stepTimings && build.stepTimings[currentStep.name]) {
+          const end = new Date().getTime();
+          build.stepTimings[currentStep.name].end = end;
+          build.stepTimings[currentStep.name].duration = end - build.stepTimings[currentStep.name].start;
+          build.stepTimings[currentStep.name].status = 'failed';
+          build.stepTimings[currentStep.name].continueOnError = currentStep.continueOnError || false;
+          this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
+        }
+
+        this.build_error(build, error as Error);
+        fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2)); // Persist error state
+        this.emit("build_error", build);
+        buildLogger.error(`❌ Error in step '${currentStep.name}':`, error);
+        if (!currentStep.continueOnError) {
+          return; // Stop execution if continueOnError is not true
+        }
+      }
+    }
+
+    // Final check if build completed successfully (e.g., if all steps were skipped due to resume)
+    if (!build.ended && !build.isAborted && !build.error) {
+      build.ended = new Date();
+      build.activeStep = undefined;
+      this.buildService.updateBuild(build.id, { percentage: 100, ended: build.ended, activeStep: undefined, status: 'success' });
+      fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
+
+      buildLogger.info(`\n📦 Archiving build artifacts...`);
+      try {
+        VersioningService.getInstance().archiveBuild(pipelineDir, pipeline.appName, pipeline.version, workspaceDir);
+      } catch (archErr) {
+        this.logger.error(`❌ Versioning failed but build succeeded.`, archErr as Error);
+        this.buildService.log(build.id, `❌ Versioning failed: ${archErr}`);
+      }
+
+      this.emit("build_complete", build);
+    }
+
+    if (pipeline.kubernetes) {
+      this.deployToKubernetes(pipeline.kubernetes);
+    }
+  }
+
+
+  public async abort(id: number | string) { // Updated type
+    let build = this.builds.find(x => x.id === id);
+    if (build) {
+      build.isAborted = true;
+      this.buildService.updateBuild(build.id, { isAborted: true, status: 'aborted' });
+      this.emit("build_aborted", build);
+    }
+  }
+
+  public async rollback(pipelineId: string, version: string, smartRollbackYaml?: string) {
+    this.logger.info(`\n⏪ Rollback/Restore requested for ${pipelineId} v${version}`);
+
+    // Resolve Pipeline & Paths
+    // We need to resolve pipelineDir same as run() does.
+    // Ideally refactor resolution logic, but for now duplicate/adapt slightly or assume similar structure.
+    // Or better, use existing pipeline object to find filePath.
+
+    const pipeline = this.targets.find(t => t.id === pipelineId);
+    if (!pipeline) throw new Error(`Pipeline ${pipelineId} not found`);
+
+    // Determine Paths (Simplified Logic based on known structure)
+    let pipelineDir: string;
+    if (pipeline.filePath) {
+      const yamlDir = path.dirname(pipeline.filePath);
+      if (fs.existsSync(path.join(yamlDir, '.pipeline'))) {
+        pipelineDir = yamlDir;
+      } else {
+        const baseWorkspaceDir = path.join(PIPELINES_DIR, "_legacy_workspaces");
+        pipelineDir = path.join(baseWorkspaceDir, pipelineId);
+      }
+    } else {
+      // Fallback
+      const baseWorkspaceDir = path.join(PIPELINES_DIR, "_legacy_workspaces");
+      pipelineDir = path.join(baseWorkspaceDir, pipelineId);
+    }
+
+    const versionsDir = path.join(pipelineDir, "versions");
+    const restoreWorkspace = path.join(versionsDir, "rollback_workspace");
+    const artifactPath = path.join(versionsDir, `${version}.zip`);
+
+    if (!fs.existsSync(artifactPath)) {
+      // Check for Docker?
+      // If docker, we might not have a local artifact file to unzip, just an image tag.
+      // But users want to "download artifacts manually" too.
+      // Assuming Zip for restore flow for now as per "unzip" requirement.
+      // If it's a docker image, smartRollbackYaml should probably just reference the image tag.
+      // BUT if we need workspace assets (k8s yamls, etc), we need the zip.
+      // VersioningService currently does ONE or OTHER. 
+      // If Docker, we don't have a zip. This is a limitation.
+      // For now, fail if no zip.
+      throw new Error(`Artifact not found at ${artifactPath}. Docker-only/missing builds cannot be file-restored yet.`);
+    }
+
+    // Prepare Restore Workspace
+    if (fs.existsSync(restoreWorkspace)) {
+      fs.rmSync(restoreWorkspace, { recursive: true, force: true });
+    }
+    fs.mkdirSync(restoreWorkspace, { recursive: true });
+
+    // Unzip
+    this.logger.info(`📦 Extracting artifact to ${restoreWorkspace}...`);
+    try {
+      execSync(`unzip -o "${artifactPath}" -d "${restoreWorkspace}"`, { stdio: 'inherit' });
+    } catch (e) {
+      throw new Error(`Failed to unzip artifact: ${e}`);
+    }
+
+    // Handle Smart Rollback YAML
+    let runYaml = smartRollbackYaml;
+    if (smartRollbackYaml) {
+      const rollbackYamlPath = path.join(restoreWorkspace, '.rollback.yaml');
+      fs.writeFileSync(rollbackYamlPath, smartRollbackYaml);
+      this.logger.info(`📝 Written smart rollback YAML to ${rollbackYamlPath}`);
+    } else {
+      // Full manual redeploy? Use original pipeline.yaml or pipeline object?
+      // If we want to run the *original* steps from that version, we hopefully have the yaml in the zip?
+      // Or we use the *current* pipeline definition but apply it to the old code?
+      // Usually "Redeploy" means "Run current pipeline on old code" or "Run old pipeline on old code".
+      // The user said "create a temporary rollback yaml file that will skip all the parts that arent necessary".
+      // If no smart yaml provided, maybe just warn or run standard?
+      // Let's assume passed yaml is required for "rollback", or if null, run full pipeline (Redeploy).
+    }
+
+    // Execute
+    // We use 'run' with custom options
+    this.logger.info(`🚀 Executing Rollback/Redeploy...`);
+    await this.run(pipelineId, undefined, {
+      customYaml: smartRollbackYaml, // If null, uses standard pipeline
+      customWorkspace: restoreWorkspace,
+      skipClean: true // Don't wipe what we just unzipped
+    });
+  }
+
+  public resolvePipelineDir(pipelineId: string): string {
+    const pipeline = this.targets.find(t => t.id === pipelineId);
+    if (!pipeline) throw new Error(`Pipeline ${pipelineId} not found`);
+
+    if (pipeline.filePath) {
+      const yamlDir = path.dirname(pipeline.filePath);
+      if (fs.existsSync(path.join(yamlDir, '.pipeline'))) {
+        return yamlDir;
+      } else {
+        const baseWorkspaceDir = path.join(PIPELINES_DIR, "_legacy_workspaces");
+        return path.join(baseWorkspaceDir, pipelineId);
+      }
+    } else {
+      const baseWorkspaceDir = path.join(PIPELINES_DIR, "_legacy_workspaces");
+      return path.join(baseWorkspaceDir, pipelineId);
+    }
+  }
+
+  public generateRollbackPlan(pipelineId: string): any {
+    const pipeline = this.targets.find(t => t.id === pipelineId);
+    if (!pipeline) throw new Error(`Pipeline ${pipelineId} not found`);
+
+    // Heuristic: Keep only deployment steps
+    const stepsToKeep = pipeline.steps.filter(step => {
+      const n = step.name.toLowerCase();
+      const r = step.run.toLowerCase();
+      const isBuild = n.includes('build') || n.includes('compile') || n.includes('test') || r.includes('npm run build') || r.includes('docker build');
+      const isDeploy = n.includes('deploy') || n.includes('release') || n.includes('publish') || r.includes('kubectl') || r.includes('helm') || r.includes('scp');
+      return !isBuild;
+    });
+
+    const rollbackPipeline = { ...pipeline };
+    rollbackPipeline.steps = stepsToKeep;
+    return rollbackPipeline;
+  }
+
+  private deployToKubernetes(k8s: KubernetesConfig) {
+    try {
+      this.logger.info(
+        `\n⚙️ Deploying to Kubernetes namespace: ${k8s.namespace}`
+      );
+      if (k8s.context) {
+        execSync(`kubectl config use-context ${k8s.context}`, {
+          stdio: "inherit",
+        });
+      }
+      execSync(`kubectl apply -f ${k8s.deploymentFile}`, { stdio: "inherit" });
+      if (k8s.serviceFile) {
+        execSync(`kubectl apply -f ${k8s.serviceFile}`, { stdio: "inherit" });
+      }
+      this.logger.info(`✅ Kubernetes deployment complete.`);
+    } catch (error) {
+      this.logger.error(`❌ Kubernetes deployment failed:`, error);
+    }
+  }
+
+  public async approveBuild(buildId: string) {
+    const buildData = this.buildService.getBuild(buildId);
+    if (!buildData) throw new Error("Build not found");
+
+    const pipeline = this.targets.find(t => t.id === buildData.target);
+    if (!pipeline) throw new Error("Pipeline not found");
+
+    // Construct Build Object
+    const build: Build = {
+      id: buildData.id,
+      target: buildData.target,
+      status: buildData.status,
+      activeStep: buildData.active_step,
+      percentage: buildData.percentage,
+      version: buildData.version,
+      started: new Date(buildData.started_at),
+      ended: buildData.ended_at ? new Date(buildData.ended_at) : undefined,
+      steps: pipeline.steps.map(s => s.name),
+      isAborted: buildData.status === 'aborted',
+      stepTimings: buildData.step_timings ? JSON.parse(buildData.step_timings) : {}
+    };
+
+    // Find active step index
+    const activeIndex = pipeline.steps.findIndex(s => s.name === build.activeStep);
+    if (activeIndex === -1) {
+      // Should not happen if build is paused at approval
+      // If completed, do nothing
+      return;
+    }
+
+    // Mark the approval step as successful
+    if (build.stepTimings && build.stepTimings[pipeline.steps[activeIndex].name]) {
+      const end = new Date().getTime();
+      build.stepTimings[pipeline.steps[activeIndex].name].end = end;
+      build.stepTimings[pipeline.steps[activeIndex].name].duration = end - build.stepTimings[pipeline.steps[activeIndex].name].start;
+      build.stepTimings[pipeline.steps[activeIndex].name].status = 'success';
+      this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings } as Partial<Build>);
+    }
+
+    // Resume from the next step
+    if (activeIndex < pipeline.steps.length - 1) {
+      const nextStep = pipeline.steps[activeIndex + 1];
+      build.activeStep = nextStep.name;
+      build.percentage = Math.round(((activeIndex + 2) / pipeline.steps.length) * 100);
+
+      this.buildService.updateBuild(build.id, {
+        activeStep: build.activeStep,
+        percentage: build.percentage,
+        status: 'running' // Change status back to running
+      });
+
+      // Resume
+      this.run(build.target, build);
+    } else {
+      // Was the last step, so pipeline is complete
+      build.percentage = 100;
+      build.ended = new Date();
+      build.activeStep = undefined;
+      this.buildService.updateBuild(build.id, {
+        percentage: 100,
+        ended: build.ended,
+        status: 'success'
+      } as Partial<Build>);
+      this.emit("build_complete", build);
+    }
+  }
+
+  //#endregion
+}

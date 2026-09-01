@@ -1,0 +1,47 @@
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyPipeline</title>
+    <link rel="stylesheet" href="./index.css">
+    <script defer type="text/javascript" src="./index.js"></script>
+    <link rel="icon" href="./favicon.ico" type="image/x-icon" />
+</head>
+
+<body>
+
+    <!-- Loader -->
+    <div class="loader-bg" id="loader">
+        <div class="loader"></div>
+    </div>
+
+
+    <!-- Control Panel -->
+    <section class="control-panel">
+        <h1 class="header">EasyPipeline</h1>
+        <!-- pipeline logs -->
+        <textarea class="logs-panel" contenteditable="false" disabled id="logs-panel"></textarea>
+        <!-- Enviornment Select -->
+        <label for="">Target:</label>
+        <select class="env-select" id="enviornment-select"></select>
+        <!-- Controls -->
+        <div class="controls">
+            <!-- Run -->
+            <button id="run" class="run-btn" onclick="StartPipeline()">Run</button>
+            <!-- Abort -->
+            <button id="abort" class="abrt-btn" onclick="Abort()">Abort Build</button>
+            <!-- Clear Logs -->
+            <button class="clr-btn" onclick="ClearLogsPanel()">X</button>
+        </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section class="dashboard">
+        <h1 class="dashboard-header">TRIGGER A BUILD TO CHECK PIPELINE STATUS</h1>
+        <!-- Pipeline Target -->
+        <div id="pipeline-target"></div>
+    </section>
+</body>
+
+</html>

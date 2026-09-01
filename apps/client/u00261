@@ -1,0 +1,7 @@
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path /Users/sean/source/EZPIPELINE/apps/client
+npm error workspace client@0.0.0
+npm error location /Users/sean/source/EZPIPELINE/apps/client
+npm error command failed
+npm error command sh -c tsc -b && vite build

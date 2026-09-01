@@ -1,0 +1,990 @@
+import React, { useEffect, useState } from 'react';
+import BuildTerminal from '../../components/BuildTerminal';
+import PipelineSettingsModal from '../../components/PipelineSettingsModal';
+import FileTreeSidebar from '../../components/FileTreeSidebar';
+import CreatePipelineModal from '../../components/CreatePipelineModal';
+import CreateGroupModal from '../../components/CreateGroupModal';
+import Terminal from '../../components/Terminal';
+import { useConfirm } from '../../contexts/ConfirmationContext';
+import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight } from 'lucide-react';
+import { io, Socket } from 'socket.io-client';
+import API_URL from '../../config/api';
+
+// ... interfaces ...
+
+interface Pipeline {
+    id: string;
+    appName: string;
+    description: string;
+    version: string;
+    group?: string;
+    filePath?: string;
+    env?: string;
+    requireConfirmation?: boolean;
+}
+
+
+
+export interface BuildHistoryEntry {
+    buildNumber: number;
+    pipelineName: string;
+    pipelineId: string;
+    group: string;
+    status: 'running' | 'success' | 'failed' | 'aborted' | 'error';
+    startTime: string;
+    endTime?: string;
+    duration?: number;
+    displayNumber?: number;  // Dynamic numbering for display
+    steps: Array<{
+        name: string;
+        status: 'pending' | 'running' | 'success' | 'failed' | 'error';
+        startTime?: string;
+        endTime?: string;
+        duration?: number;
+        description?: string;
+        continueOnError?: boolean;  // For status display logic
+    }>;
+    triggeredBy: string;
+    id: string; // BUILD UUID
+    activeStep?: string;
+}
+
+const DashboardPage: React.FC = () => {
+    const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+    const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
+    const [logs, setLogs] = useState<string[]>([]);
+    const [selectedGroup, setSelectedGroup] = useState<string | undefined>(undefined);
+    const [selectedPipelineForRun, setSelectedPipelineForRun] = useState<string>('');
+    const [logsExpanded, setLogsExpanded] = useState(false);
+    const { token } = useAuth();
+    const [logFilter, setLogFilter] = useState("");
+    const [activePipeline, setActivePipeline] = useState<Pipeline | null>(null);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
+    const [newGroupName, setNewGroupName] = useState("");
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [showGroupModal, setShowGroupModal] = useState(false);
+    const [groupParentPath, setGroupParentPath] = useState<string | undefined>(undefined);
+    const [, setGroups] = useState<string[]>([]); // Added for setGroups in fetchPipelines
+    const [isRunning, setIsRunning] = useState(false);
+    const { confirm } = useConfirm();
+    const toast = useToast();
+    const [logsTab, setLogsTab] = useState<'logs' | 'terminal'>('logs');
+    const [socket, setSocket] = useState<Socket | null>(null);
+
+    const fetchPipelines = async () => {
+        try {
+            const response = await fetch(`${API_URL}/api/targets`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await response.json();
+            console.log('[DEBUG] Fetched pipelines:', data.targets);
+            setPipelines(data.targets || []);
+
+            // Extract unique groups
+            const uniqueGroups = Array.from(new Set((data.targets || []).map((p: Pipeline) => p.group).filter(Boolean)));
+            console.log('[DEBUG] Unique groups:', uniqueGroups);
+            setGroups(['All', ...uniqueGroups as string[]]);
+        } catch (error) {
+            console.error('Error fetching pipelines:', error);
+        }
+    };
+
+    const fetchBuildHistory = async () => {
+        try {
+            const query = selectedGroup && selectedGroup !== 'General' ? `?group=${encodeURIComponent(selectedGroup)}` : '';
+            const response = await fetch(`${API_URL}/api/builds/history${query}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await response.json();
+            // Sort by startTime DESC (newest first)
+            const sorted = (data.history || [])
+                .sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+            setBuildHistory(sorted);
+        } catch (error) {
+            console.error('Error fetching build history:', error);
+        }
+    };
+
+    const deleteBuild = async (id: string) => {
+        if (!await confirm({
+            title: "Delete Build",
+            message: "Are you sure you want to delete this build execution history?",
+            confirmText: "Delete",
+            isDangerous: true
+        })) return;
+
+        try {
+            await fetch(`${API_URL}/api/builds/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            fetchBuildHistory();
+        } catch (error) {
+            console.error('Error deleting build:', error);
+        }
+    };
+
+    const clearHistory = async (group?: string) => {
+        if (!await confirm({
+            title: group ? "Clear Group History" : "Clear All History",
+            message: group ? `Clear build history for group '${group}' ? ` : "Clear ALL build history globally? This cannot be undone.",
+            confirmText: "Clear All",
+            isDangerous: true
+        })) return;
+
+        try {
+            const query = group ? `?group=${encodeURIComponent(group)}` : '';
+            await fetch(`${API_URL}/api/builds/history${query}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            fetchBuildHistory();
+        } catch (error) {
+            console.error('Error clearing history:', error);
+        }
+    };
+
+    useEffect(() => {
+        if (!token) return;
+        // Initial fetch for pipelines and build history
+        fetchPipelines();
+        fetchBuildHistory();
+
+        const eventSource = new EventSource(`${API_URL}/api/logs-stream?token=${token}`);
+
+        eventSource.onopen = () => {
+            setLogs((prev) => [...prev, '>>> Connected to Live Stream <<<']);
+        };
+
+        eventSource.onmessage = (event) => {
+            try {
+                const payload = JSON.parse(event.data);
+
+                if (payload.type === 'connected') return;
+
+                // Handle Logs
+                if (payload.message) {
+                    setLogs((prev) => [...prev, payload.message]);
+                    return;
+                }
+
+                // Handle Events
+                const { type } = payload;
+                if (!type) {
+                    return;
+                }
+
+                if (type === 'progress' || type === 'build_start' || type === 'build_complete' || type === 'build_error' || type === 'build_aborted') {
+                    // Refresh build history to get latest status
+                    // Debounce or check?
+                    // For now, just rely on fetch
+                    fetchBuildHistory();
+                }
+
+            } catch (e) {
+                setLogs((prev) => [...prev, event.data]);
+            }
+        };
+
+        return () => {
+            eventSource.close();
+        };
+    }, [token]);
+
+    // Initialize Socket.IO
+    useEffect(() => {
+        if (!token) return;
+        const newSocket = io(API_URL, { auth: { token }, reconnection: true });
+        setSocket(newSocket);
+        return () => { newSocket.disconnect(); };
+    }, [token]);
+
+    const runPipeline = async (target: string) => {
+        if (isRunning) return;
+        setIsRunning(true);
+        const pipeline = pipelines.find(p => p.id === target);
+
+        // Check if confirmation is required
+        if (pipeline?.requireConfirmation) {
+            if (!await confirm({
+                title: "Confirmation Required",
+                message: `You are about to run: "${pipeline.appName}"\nGroup: ${pipeline.group || 'General'} \n\nAre you sure you want to proceed ? `,
+                confirmText: "Run Pipeline"
+            })) {
+                setIsRunning(false);
+                return;
+            }
+            await executePipeline(target);
+            return;
+        }
+
+        await executePipeline(target);
+    };
+
+    const executePipeline = async (target: string) => {
+        setIsRunning(true);
+
+        try {
+            await fetch(`${API_URL}/api/run-pipeline`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ target }),
+            });
+
+        } catch (e) {
+            toast.error('Failed to start pipeline');
+        } finally {
+            setIsRunning(false);
+        }
+    };
+
+    // Get unique groups
+    const [allGroups, setAllGroups] = useState<Set<string>>(new Set());
+    const [fileTree, setFileTree] = useState<any[]>([]);
+
+    const fetchGroups = async () => {
+        try {
+            const res = await fetch(`${API_URL}/api/config/files`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+
+            setFileTree((data.yaml || []).filter((node: any) =>
+                node.name !== 'General' || (node.children && node.children.length > 0)
+            ));
+
+            // Extract folders from YAML tree
+            const folders = new Set<string>();
+            const traverse = (nodes: any[]) => {
+                nodes.forEach(node => {
+                    if (node.type === 'directory') {
+                        folders.add(node.path);
+                        if (node.children) traverse(node.children);
+                    }
+                });
+            };
+
+            if (data.yaml) {
+                traverse(data.yaml);
+            }
+
+            // Also merge from pipelines just in case
+            pipelines.forEach(p => {
+                if (p.group && p.group !== 'General') folders.add(p.group);
+            });
+
+
+
+            setAllGroups(folders);
+        } catch (e) {
+            console.error("Failed to fetch groups", e);
+        }
+    };
+
+    useEffect(() => {
+        if (!token) return;
+        fetchGroups();
+    }, [pipelines, token]);
+
+    const createGroup = async (parentPath?: string) => {
+        setGroupParentPath(parentPath);
+        setShowGroupModal(true);
+    };
+
+    const confirmCreateGroup = async (name: string) => {
+        // Construct full path
+        const finalPath = groupParentPath ? `${groupParentPath}/${name}` : name;
+
+        if (allGroups.has(finalPath)) {
+            toast.error("Group name already exists!");
+            return;
+        }
+
+        try {
+            await fetch(`${API_URL}/api/config/create-folder`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ type: 'yaml', path: finalPath })
+            });
+            toast.success("Group created!");
+            fetchGroups(); // Refresh groups from server
+            setSelectedGroup(finalPath);
+        } catch (e) { console.error(e); }
+    };
+
+    const deleteGroup = async (group: string) => {
+        if (group === 'General') {
+            toast.error("Cannot delete General group.");
+            return;
+        }
+
+        // Check if pipelines exist in this group (or sub-groups)
+        const hasPipelines = pipelines.some(p => p.group === group || p.group?.startsWith(group + '/'));
+        if (hasPipelines) {
+            toast.error(`Cannot delete group '${group}' because it contains pipelines. Please move or delete them first.`);
+            return;
+        } else {
+            if (!await confirm({
+                title: `Delete Group?`,
+                message: `Delete group '${group}'?`,
+                confirmText: "Delete",
+                isDangerous: true
+            })) return;
+        }
+
+        try {
+            const res = await fetch(`${API_URL}/api/config/delete-folder`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ type: 'yaml', path: group })
+            });
+            if (!res.ok) throw new Error("Failed");
+
+            // Refresh
+            setSelectedGroup("General");
+            fetchPipelines();
+            fetchGroups();
+            fetchGroups();
+        } catch (e) {
+            toast.error("Failed to delete group");
+        }
+    };
+
+    const handleDropPipeline = async (e: React.DragEvent, group: string) => {
+        e.preventDefault();
+        const data = e.dataTransfer.getData('pipeline');
+        if (!data) return;
+
+        const pipeline: Pipeline = JSON.parse(data);
+        if (pipeline.group === group) return; // Same group
+        if (!pipeline.filePath) return;
+
+        if (!await confirm({
+            title: "Move Pipeline?",
+            message: `Move ${pipeline.appName} to ${group}?`,
+            confirmText: "Move"
+        })) return;
+
+        try {
+            const fileName = pipeline.filePath.split('/').pop();
+            const newPath = group === 'General' ? fileName : `${group}/${fileName}`;
+
+            await fetch(`${API_URL}/api/config/move`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                    type: 'yaml',
+                    currentPath: pipeline.filePath,
+                    newPath
+                })
+            });
+            fetchPipelines();
+            fetchGroups(); // Refresh groups too
+            fetchGroups(); // Refresh groups too
+        } catch (e) {
+            console.error(e);
+            toast.error("Failed to move pipeline");
+        }
+    };
+
+    const handleMovePipeline = async (sourcePath: string, targetFolder: string) => {
+        // Find pipeline by checking if filePath includes the source path
+        const pipeline = pipelines.find(p => p.filePath?.includes(sourcePath));
+        if (!pipeline || !pipeline.filePath) return;
+
+        // Extract current group from pipeline
+        const currentGroup = pipeline.group || 'General';
+        if (currentGroup === targetFolder) return; // Same folder
+
+        if (!await confirm({
+            title: "Move Pipeline?",
+            message: `Move ${pipeline.appName} to ${targetFolder}?`,
+            confirmText: "Move"
+        })) return;
+
+        try {
+            // Extract pipeline bundle directory name from source path
+            const bundleName = sourcePath.split('/').pop();
+            const newPath = targetFolder ? `${targetFolder}/${bundleName}` : bundleName;
+
+            await fetch(`${API_URL}/api/config/move`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                    type: 'yaml',
+                    currentPath: sourcePath,
+                    newPath
+                })
+            });
+            fetchPipelines();
+            fetchGroups();
+            toast.success('Pipeline moved successfully');
+        } catch (e) {
+            console.error(e);
+            toast.error("Failed to move pipeline");
+        }
+    };
+
+
+
+    const triggerRenameGroup = (group: string) => {
+        setRenamingGroup(group);
+        // Extract just the folder name from the full path
+        const folderName = group.split('/').pop() || group;
+        setNewGroupName(folderName);
+    };
+
+    const performRenameGroup = async () => {
+        if (!renamingGroup || !newGroupName) {
+            setRenamingGroup(null);
+            return;
+        }
+
+        // Extract parent path and old folder name
+        const pathParts = renamingGroup.split('/');
+        const oldFolderName = pathParts.pop();
+        const parentPath = pathParts.join('/');
+
+        // If name unchanged, cancel
+        if (newGroupName === oldFolderName) {
+            setRenamingGroup(null);
+            return;
+        }
+
+        // Construct new full path
+        const newFullPath = parentPath ? `${parentPath}/${newGroupName}` : newGroupName;
+
+        try {
+            // Rename the folder on the backend
+            await fetch(`${API_URL}/api/config/rename-folder`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                    type: 'yaml',
+                    oldPath: renamingGroup,
+                    newPath: newFullPath
+                })
+            });
+
+            // Update selected group if it was the renamed one
+            if (selectedGroup === renamingGroup) {
+                setSelectedGroup(newFullPath);
+            }
+
+            setRenamingGroup(null);
+            fetchPipelines();
+            fetchGroups();
+            toast.success('Folder renamed successfully');
+        } catch (e) {
+            console.error(e);
+            toast.error("Failed to rename folder");
+        }
+    };
+
+    const handleSelectPipeline = (path: string) => {
+        const found = pipelines.find(p => {
+            if (!p.filePath) return false;
+            // Bundle Path: .../Testing/test/pipeline.yaml
+            // Path: Testing/test
+            return p.filePath.endsWith(`${path}/pipeline.yaml`);
+        });
+
+        if (found) {
+            setActivePipeline(found);
+        }
+    };
+
+    const groupsList = Array.from(allGroups).sort();
+    // Show pipelines from selected group AND all child groups
+    const filteredPipelines = pipelines.filter(p => {
+        if (selectedGroup === undefined) return !p.group || p.group === 'General'; // Show root pipelines if no group selected
+        const group = p.group || "";
+        // Exact match OR child of selected group
+        const matches = group === selectedGroup || group.startsWith(selectedGroup + '/');
+        console.log(`[DEBUG] Pipeline "${p.appName}" group="${group}" selectedGroup="${selectedGroup}" matches=${matches}`);
+        return matches;
+    });
+    console.log('[DEBUG] Filtered pipelines count:', filteredPipelines.length, 'for selectedGroup:', selectedGroup);
+
+    const filteredBuildHistory = buildHistory.filter(b => {
+        const group = b.group || "General";
+        if (selectedGroup === undefined) return group === 'General'; // Root/General only
+        return group === selectedGroup || group.startsWith(selectedGroup + '/');
+    }).map((build, index, array) => ({
+        ...build,
+        displayNumber: array.length - index  // Oldest = highest number
+    }));
+
+    return (
+        <div className="flex flex-col h-full bg-[var(--color-bg)]">
+            <div className="flex flex-1 overflow-hidden">
+                {/* Sidebar */}
+                <div className={`bg-[var(--color-surface)] border-r border-slate-700 flex flex-col pt-4 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-12' : 'w-64'}`}>
+                    {!sidebarCollapsed ? (
+                        <div
+                            className="flex-1 flex flex-col min-h-0"
+                            onClick={() => setSelectedGroup(undefined)}
+                        >
+                            <FileTreeSidebar
+                                fileTree={fileTree}
+                                selectedGroup={selectedGroup || ''}
+                                onSelectGroup={setSelectedGroup}
+                                onSelectPipeline={handleSelectPipeline}
+                                onCreateGroup={createGroup}
+                                onDeleteGroup={deleteGroup}
+                                onRenameGroup={triggerRenameGroup}
+                                onDropPipeline={handleDropPipeline}
+                                onMovePipeline={handleMovePipeline}
+                                collapsed={sidebarCollapsed}
+                                onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+                                className="flex-1"
+                            />
+                        </div>
+                    ) : (
+                        <div className="flex flex-col items-center pt-4">
+                            <button
+                                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                                className="p-2 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors mb-4"
+                                title="Expand Sidebar"
+                            >
+                                <ChevronRight className="w-5 h-5 text-emerald-500" />
+                            </button>
+                        </div>
+                    )}
+
+                    <div className="p-4 border-t border-slate-700">
+                        {!sidebarCollapsed && (
+                            <button
+                                onClick={() => setShowCreateModal(true)}
+                                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Plus className="w-4 h-4" /> New Pipeline
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Main Content Area */}
+                <main className="flex-1 flex flex-col overflow-hidden bg-[var(--color-bg)]">
+                    {/* Quick Run Bar */}
+                    <div className="bg-[var(--color-surface)] border-b border-slate-700/50 p-4 flex-shrink-0 z-10 shadow-sm">
+                        <h2 className="text-lg font-bold text-white whitespace-nowrap mb-7">Quick Run</h2>
+                        <div className="flex gap-4 items-center p-4 bg-slate-900/50 border border-slate-700/50 rounded-lg shadow-sm">
+                            <span className="text-sm font-bold uppercase tracking-wider text-slate-400">Quick Run</span>
+                            {filteredPipelines.length > 0 ? (
+                                <div className="flex gap-2 flex-1">
+                                    <select
+                                        value={selectedPipelineForRun}
+                                        onChange={(e) => setSelectedPipelineForRun(e.target.value)}
+                                        className="flex-1 max-w-md bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm focus:border-emerald-500 outline-none"
+                                    >
+                                        <option value="">Select a pipeline...</option>
+                                        {(() => {
+                                            // Calculate duplicates to decide when to show group
+                                            const nameCounts: Record<string, number> = {};
+                                            filteredPipelines.forEach(p => {
+                                                nameCounts[p.appName] = (nameCounts[p.appName] || 0) + 1;
+                                            });
+
+                                            return filteredPipelines.map(p => {
+                                                const isDuplicate = nameCounts[p.appName] > 1;
+                                                const label = isDuplicate && p.group && p.group !== 'General'
+                                                    ? `${p.appName} (${p.group})`
+                                                    : p.appName;
+
+                                                return (
+                                                    <option key={p.id} value={p.id}>
+                                                        {label}
+                                                    </option>
+                                                );
+                                            });
+                                        })()}
+                                    </select>
+                                    <button
+                                        onClick={() => selectedPipelineForRun && runPipeline(selectedPipelineForRun)}
+                                        disabled={!selectedPipelineForRun}
+                                        className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded font-medium transition-colors flex items-center gap-2"
+                                    >
+                                        <Play className="w-4 h-4" />
+                                        Run
+                                    </button>
+                                </div>
+                            ) : (
+                                <p className="text-slate-500 text-sm">Select a group or create a pipeline</p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Build History List */}
+                    <div className="flex-1 overflow-y-auto px-8 py-6 space-y-4 custom-scrollbar">
+                        <div className="mb-4 flex items-center justify-between">
+                            <div>
+                                <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                                    <Folder className="w-6 h-6 text-emerald-500" />
+                                    {selectedGroup ? `${selectedGroup} Pipelines` : 'Pipelines'}
+                                </h2>
+                                <p className="text-slate-500 text-sm mt-1">Recent builds for this group</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => clearHistory(selectedGroup || undefined)}
+                                    className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                    title={selectedGroup ? `Clear history for ${selectedGroup}` : "Clear root history"}
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    Clear History
+                                </button>
+                            </div>
+                        </div>
+
+                        {filteredBuildHistory.length > 0 ? (
+                            filteredBuildHistory.map((build) => (
+                                <div key={build.buildNumber} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
+                                    <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-slate-400 font-mono text-sm">#{build.displayNumber || build.buildNumber}</span>
+                                            <span className="text-white font-semibold">{build.pipelineName}</span>
+                                            <span className={`flex items-center gap-1.5 text-sm ${build.status === 'success' ? 'text-emerald-400' :
+                                                build.status === 'running' ? 'text-blue-400' :
+                                                    build.status === 'failed' ? (
+                                                        // Check if any step failed with continueOnError
+                                                        build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'text-amber-400' : 'text-red-400'
+                                                    ) :
+                                                        build.status === 'error' ? 'text-amber-400' :
+                                                            'text-slate-400'
+                                                }`}>
+                                                {build.status === 'success' && <CheckCircle className="w-4 h-4" />}
+                                                {build.status === 'running' && <Loader className="w-4 h-4 animate-spin" />}
+                                                {build.status === 'failed' && (
+                                                    build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ?
+                                                        <AlertTriangle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />
+                                                )}
+                                                {build.status === 'error' && <AlertTriangle className="w-4 h-4" />}
+                                                <span className="capitalize">{build.status === 'failed' && build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'Warning' : build.status}</span>
+                                            </span>
+                                            {build.status === 'running' ? (
+                                                <button
+                                                    onClick={async (e) => {
+                                                        e.stopPropagation();
+                                                        if (!await confirm({
+                                                            title: "Abort Pipeline",
+                                                            message: "Are you sure you want to stop this running pipeline?",
+                                                            isDangerous: true,
+                                                            confirmText: "Abort"
+                                                        })) return;
+
+                                                        await fetch(`${API_URL}/api/builds/${build.id}/abort`, {
+                                                            method: 'POST',
+                                                            headers: { Authorization: `Bearer ${token}` }
+                                                        });
+                                                        fetchBuildHistory();
+                                                    }}
+                                                    className="ml-auto bg-red-600/10 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-3 py-1 text-xs rounded-full font-bold transition-all flex items-center gap-1"
+                                                >
+                                                    <Square className="w-3 h-3 fill-current" /> Abort
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        deleteBuild(build.id);
+                                                    }}
+                                                    className="ml-auto text-slate-500 hover:text-red-400 p-1 rounded hover:bg-slate-700 transition-all"
+                                                    title="Delete Build"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <button
+                                                onClick={() => {
+                                                    const pipeline = pipelines.find(p => p.id === build.pipelineId);
+                                                    if (pipeline) {
+                                                        setActivePipeline(pipeline);
+                                                    }
+                                                }}
+                                                className="text-slate-500 hover:text-emerald-400 transition-colors p-1 hover:bg-slate-800 rounded"
+                                                title="Open pipeline settings"
+                                            >
+                                                <Settings className="w-4 h-4" />
+                                            </button>
+                                            <div className="flex flex-col items-end gap-1">
+                                                <span className="theme-text-muted text-sm font-medium">
+                                                    {new Date(build.startTime).toLocaleTimeString()}
+                                                </span>
+                                                {build.duration !== undefined && build.duration > 0 && (
+                                                    <span className="flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 py-0.5 rounded-full border border-emerald-400/20">
+                                                        <Clock className="w-3 h-3" />
+                                                        {(() => {
+                                                            const s = Math.floor(build.duration / 1000);
+                                                            const m = Math.floor(s / 60);
+                                                            const sec = s % 60;
+                                                            if (m > 0) return `${m}m ${sec}s`;
+                                                            return `${sec}s`;
+                                                        })()}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="p-4 bg-slate-900/30">
+                                        <div className="flex flex-wrap gap-2">
+                                            {build.steps.map((step, idx) => (
+                                                <div key={idx} title={step.description} className={`flex-1 min-w-[120px] rounded-lg p-3 border transition-colors flex flex-col ${step.status === 'running' ? 'bg-slate-900 border-blue-500/50 shadow-sm shadow-blue-500/10' :
+                                                    step.status === 'success' ? 'bg-slate-900 border-emerald-900/50' :
+                                                        step.status === 'failed' ? 'bg-red-950/20 border-red-500/50 shadow-sm shadow-red-500/10' :
+                                                            step.status === 'error' ? 'bg-amber-950/20 border-amber-500/50 shadow-sm shadow-amber-500/10' :
+                                                                'bg-slate-900/50 border-slate-800 opacity-60'
+                                                    }`}>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className={`text-sm font-medium ${step.status === 'running' ? 'text-blue-400' :
+                                                            step.status === 'success' ? 'text-emerald-400' :
+                                                                step.status === 'failed' ? 'text-red-400' :
+                                                                    step.status === 'error' ? 'text-amber-400' :
+                                                                        'text-slate-500'
+                                                            }`}>{step.name}</span>
+
+                                                        {step.status === 'running' && <Loader className="w-3 h-3 text-blue-500 animate-spin" />}
+                                                        {step.status === 'success' && <CheckCircle className="w-3 h-3 text-emerald-500" />}
+                                                        {step.status === 'failed' && <XCircle className="w-3 h-3 text-red-500" />}
+                                                        {step.status === 'error' && <AlertTriangle className="w-3 h-3 text-amber-500" />}
+                                                        {step.status === 'pending' && <Circle className="w-3 h-3 text-slate-700" />}
+                                                    </div>
+
+                                                    <div className="text-slate-500 text-xs font-mono mb-1 h-4 mt-auto">
+                                                        {step.duration ? `${(step.duration / 1000).toFixed(1)}s` : step.status === 'running' ? '...' : '--'}
+                                                    </div>
+
+                                                    <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                                                        <div className={`h-full transition-all duration-500 ${step.status === 'running' ? 'bg-blue-500 w-full animate-pulse' :
+                                                            step.status === 'success' ? 'bg-emerald-500 w-full' :
+                                                                step.status === 'failed' ? 'bg-red-500 w-full' :
+                                                                    step.status === 'error' ? 'bg-amber-500 w-full' :
+                                                                        'w-0'
+                                                            }`}></div>
+                                                    </div>
+
+                                                    {/* Approval Button - Only for 'approval' steps */}
+                                                    {build.status === 'running' && build.activeStep === step.name && (step.name.toLowerCase().includes('approv') || step.name.toLowerCase().includes('gate')) && (
+                                                        <div className="mt-3 flex justify-center">
+                                                            <button
+                                                                onClick={async (e) => {
+                                                                    e.stopPropagation();
+                                                                    if (!await confirm({
+                                                                        title: "Approve Step",
+                                                                        message: "Confirm approval to resume pipeline execution?",
+                                                                        confirmText: "Approve & Resume"
+                                                                    })) return;
+
+                                                                    await fetch(`${API_URL}/api/builds/${build.id}/approve`, {
+                                                                        method: 'POST',
+                                                                        headers: { Authorization: `Bearer ${token}` }
+                                                                    });
+                                                                    fetchBuildHistory();
+                                                                }}
+                                                                className="w-full bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/50 px-2 py-1 text-[10px] uppercase tracking-wide rounded font-bold transition-all animate-pulse flex items-center justify-center gap-1"
+                                                            >
+                                                                <CheckCircle className="w-3 h-3" /> Approve
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="flex flex-col items-center justify-center p-16 border border-dashed border-slate-800 rounded-xl text-slate-600 bg-slate-900/20">
+                                <div className="p-4 bg-slate-900 rounded-full mb-4 ring-1 ring-slate-800 shadow-lg">
+                                    <Clock className="w-8 h-8 text-slate-500" />
+                                </div>
+                                <h3 className="text-lg font-medium text-slate-400 mb-1">No builds history</h3>
+                                <p className="text-sm">Executions will appear here</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Expandable Server Logs / Terminal */}
+                    <div
+                        className="border-t border-slate-700 flex-shrink-0 bg-black overflow-hidden transition-all duration-500 ease-in-out flex flex-col"
+                        style={{ height: logsExpanded ? '24rem' : '69px' }}
+                    >
+                        <div
+                            className="cursor-pointer hover:bg-slate-950 transition-colors flex-shrink-0"
+                            onClick={() => setLogsExpanded(!logsExpanded)}
+                        >
+                            <div className="px-5 py-3 flex justify-between items-center">
+                                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                                    {logsExpanded ? (
+                                        <div className="flex gap-4" onClick={(e) => e.stopPropagation()}>
+                                            <button
+                                                onClick={() => setLogsTab('logs')}
+                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'logs' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+                                            >
+                                                Logs
+                                            </button>
+                                            <button
+                                                onClick={() => setLogsTab('terminal')}
+                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'terminal' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+                                            >
+                                                Terminal
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            Logs {logsExpanded && <span className="text-xs text-slate-600 font-normal normal-case ml-2">(Live Server Output)</span>}
+                                        </>
+                                    )}
+                                    {logsExpanded && logsTab === 'logs' && buildHistory[0]?.status === 'running' && (() => {
+                                        const runningStep = buildHistory[0].steps.find(s => s.status === 'running');
+                                        return runningStep?.description ? (
+                                            <span className="hidden md:inline-flex items-center gap-2 ml-4 px-3 py-1 bg-slate-900 border border-slate-700 rounded-full text-xs text-emerald-400 font-medium normal-case animate-pulse">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                                {runningStep.description}
+                                            </span>
+                                        ) : null;
+                                    })()}
+                                </h2>
+                                <div className="flex items-center gap-3">
+                                    {logsExpanded && logsTab === 'logs' && (
+                                        <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                                            <input
+                                                type="text"
+                                                placeholder="Filter logs..."
+                                                value={logFilter}
+                                                onChange={(e) => setLogFilter(e.target.value)}
+                                                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 focus:border-emerald-500 outline-none w-48 transition-all"
+                                            />
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const logsText = logs.join('\n');
+                                                    navigator.clipboard.writeText(logsText);
+                                                }}
+                                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2 py-1 rounded text-[10px] font-bold transition-colors flex items-center gap-1 border border-slate-700"
+                                                title="Copy all logs to clipboard"
+                                            >
+                                                <Copy className="w-3 h-3" /> Copy
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setLogs([]);
+                                                    setLogFilter("");
+                                                }}
+                                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2 py-1 rounded text-[10px] font-bold transition-colors flex items-center gap-1 border border-slate-700"
+                                            >
+                                                <Trash2 className="w-3 h-3" /> Clear
+                                            </button>
+                                        </div>
+                                    )}
+                                    <span className="text-xl text-slate-500 font-mono">
+                                        {logsExpanded ? '−' : '+'}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Content */}
+                        {logsExpanded && (
+                            <div className="border-t border-slate-800 flex-1 min-h-0">
+                                {logsTab === 'logs' ? (
+                                    <BuildTerminal
+                                        logs={logFilter
+                                            ? logs.filter(l => l.toLowerCase().includes(logFilter.toLowerCase()))
+                                            : logs
+                                        }
+                                    />
+                                ) : (
+                                    <Terminal socket={socket} />
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </main>
+            </div>
+
+            {/* Modal */}
+            {
+                activePipeline && (
+                    <PipelineSettingsModal
+                        pipeline={activePipeline}
+                        onClose={() => setActivePipeline(null)}
+                        onUpdate={() => { fetchPipelines(); fetchGroups(); }}
+                        availableGroups={groupsList}
+                    />
+                )
+            }
+
+            {/* Rename Group Modal */}
+            {
+                renamingGroup && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                        <div className="bg-[var(--color-surface)] rounded-xl p-6 w-96 border border-slate-700 shadow-2xl">
+                            <h3 className="text-lg font-semibold text-white mb-4">Rename Group</h3>
+                            <input
+                                type="text"
+                                value={newGroupName}
+                                onChange={(e) => setNewGroupName(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') performRenameGroup();
+                                    if (e.key === 'Escape') setRenamingGroup(null);
+                                }}
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white mb-4 focus:border-emerald-500 outline-none"
+                                placeholder="New group name"
+                                autoFocus
+                            />
+                            <div className="flex gap-2 justify-end">
+                                <button
+                                    onClick={() => setRenamingGroup(null)}
+                                    className="px-4 py-2 text-slate-400 hover:text-white transition-colors text-sm"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={performRenameGroup}
+                                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors font-medium text-sm"
+                                >
+                                    Rename
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {
+                showCreateModal && (
+                    <CreatePipelineModal
+                        onClose={() => setShowCreateModal(false)}
+                        onCreated={() => { fetchPipelines(); fetchGroups(); }}
+                        availableGroups={groupsList}
+                        defaultGroup={selectedGroup}
+                    />
+                )
+            }
+
+            {
+                showGroupModal && (
+                    <CreateGroupModal
+                        parentPath={groupParentPath}
+                        onClose={() => setShowGroupModal(false)}
+                        onConfirm={confirmCreateGroup}
+                    />
+                )
+            }
+
+            {/* ConfirmationModal removed - handled by Global Context */}
+        </div>
+    );
+};
+
+export default DashboardPage;

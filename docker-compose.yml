@@ -1,0 +1,224 @@
+# Everything EZPIPELINE needs, in one Docker project called "ezpipeline".
+#
+#   node scripts/docker.mjs          start the init step, the server and the client
+#   node scripts/docker.mjs down     stop everything
+#   node scripts/docker.mjs logs     follow the logs
+#   node scripts/docker.mjs reset    stop, delete the data volume, rebuild from scratch
+#
+# Those are spelled out rather than shortened to `npm run docker:up`, because
+# package.json has no docker:* scripts yet and this task does not own that
+# file. Adding them is four lines and it is worth doing - the exact block is in
+# the report that accompanies this work. Until then, a header promising a
+# command that does not exist would be worse than a longer one that does.
+#
+# Source is BIND-MOUNTED, so editing a file on your machine reloads the service
+# inside the container with no rebuild. node_modules is masked by anonymous
+# volumes at three levels so a host install never leaks in - better-sqlite3 is
+# a native module and the macOS copy cannot load on Linux.
+#
+# The init service runs before the server every time. It creates the
+# directories the server assumes exist and proves better-sqlite3 loads, so a
+# broken container says so in one sentence instead of dying inside winston's
+# constructor. It is not a schema migration step; EZPIPELINE runs its seven
+# migrations in-process at boot. scripts/docker-init.mjs explains that choice.
+#
+# NODE_ENV is set EXPLICITLY on every service here rather than left to the
+# image default. It was set nowhere in this repository before, so
+# ClaudeManager's `process.env.NODE_ENV !== 'production'` check read undefined
+# and took its development branch on every machine including a deploy, and
+# `npm ci` in an image with NODE_ENV=production would silently drop tsx and
+# vite - the two binaries these containers run. The images default it to
+# production so an unset value lands on the strict side; this file is where a
+# development stack says otherwise, out loud.
+#
+# `${NODE_ENV:-development}` rather than a bare literal so the same file can
+# rehearse a production run: `NODE_ENV=production docker compose up server`
+# starts the server with the production branch of every check.
+#
+# PORTS. The root .env is where you change them. Container port and host port
+# are deliberately the SAME NUMBER here, which is not what a normal compose
+# file does, and the reason is in apps/client/src/config/api.ts: in dev the
+# browser bundle calls the server at an absolute `http://localhost:<port>`,
+# where <port> is baked in at build time by a `define` in vite.config.ts
+# reading ezpipeline.config.json. The browser therefore reaches the server on
+# the HOST port, and any translation between inside and outside would break it
+# silently. scripts/docker.mjs refuses to start if .env and
+# ezpipeline.config.json disagree about those numbers, because nothing in the
+# running system would otherwise tell you.
+
+name: ezpipeline
+
+services:
+  # Prepares the writable directories and asserts the native module works,
+  # then exits. Everything else waits for it to succeed.
+  init:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: ezpipeline-init
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # Passed through so a real deployment can supply one. Left EMPTY here on
+      # purpose: apps/server/src/config/secret.ts refuses to start on an unset
+      # or placeholder secret unless NODE_ENV says development, and a value
+      # baked into this file would be a committed secret that silently works in
+      # production - which is exactly the hole this replaced.
+      JWT_SECRET: ${JWT_SECRET:-}
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/server/node_modules
+      - /app/apps/client/node_modules
+      - ezpipeline_data:/app/apps/server/data
+    working_dir: /app
+    command: ["node", "scripts/docker-init.mjs"]
+    restart: "no"
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: ezpipeline-server
+    env_file:
+      # required:false because .env is gitignored and a fresh clone has none.
+      # Without it compose refuses to start with a missing-file error, which is
+      # a bad first impression for a file that only carries optional SMTP
+      # settings. The server falls back to ezpipeline.config.json.
+      - path: .env
+        required: false
+    environment:
+      # apps/server/src/config/index.ts reads process.env.PORT first and falls
+      # back to ezpipeline.config.json's ports.server. Setting it here means
+      # the published port and the listening port cannot drift apart.
+      PORT: ${SERVER_PORT:-5001}
+      NODE_ENV: ${NODE_ENV:-development}
+      # Being precise about what these do here, because it is not the same as
+      # on the client.
+      #
+      # tsx's watcher uses fs.watch, NOT chokidar, so it does not read these
+      # two variables at all. It was measured working through the bind mount on
+      # Docker Desktop for Mac: an edit on the host was reported by tsx as
+      # "change in ./src/app.ts Restarting..." about a second later, and the new
+      # response was live seven seconds after that. VirtioFS forwards the host
+      # file events, so no polling is needed for the server.
+      #
+      # They are set anyway for the chokidar-based watchers that other tooling
+      # in this workspace brings in, and because a platform where that event
+      # bridge is missing is exactly where hot reload dies silently. If the
+      # server ever stops noticing edits on some other machine, this is the
+      # first knob to reach for, and it should be here to be reached for.
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "1000"
+    ports:
+      - "${SERVER_PORT:-5001}:${SERVER_PORT:-5001}"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - .:/app
+      # These three lines are the better-sqlite3 fix. The bind mount above
+      # would otherwise put the host's macOS-built native modules at
+      # /app/node_modules, and the server would die at require() with an error
+      # naming a .node file and no cause. An anonymous volume over each
+      # node_modules keeps the Linux copies that npm ci built in the image.
+      - /app/node_modules
+      - /app/apps/server/node_modules
+      - /app/apps/client/node_modules
+      # A NAMED volume, not a bind mount, and this is a deliberate trade.
+      #
+      # apps/server/data holds app.db plus every pipeline's workspace, build
+      # history and version zips - 1.5 GB on this machine, including a
+      # downloaded azure-cli. It must survive a restart, so it cannot be
+      # ordinary container filesystem. It is a named volume rather than a bind
+      # onto ./apps/server/data because SQLite's file locking over a macOS bind
+      # mount is a known source of "database is locked" and, worse, silent
+      # corruption, and because the container should not be sharing one DB file
+      # with a server you also run on the host.
+      #
+      # The cost, stated plainly: the container starts with an EMPTY database
+      # and walks you through EZPIPELINE's first-run setup once. Your host data
+      # is untouched. If you would rather the container use your existing data
+      # and you accept the locking risk, replace the line below with:
+      #   - ./apps/server/data:/app/apps/server/data
+      - ezpipeline_data:/app/apps/server/data
+      # The host Docker socket, so pipeline steps that call `docker` reach the
+      # daemon on your machine. The image installs a pinned Docker CLI for it.
+      #
+      # Limit worth knowing before you rely on it: the daemon is the HOST's, so
+      # it resolves build-context paths on the HOST filesystem. Image
+      # references, registries, `docker ps`, `docker run` and `docker push` all
+      # work. A `docker build` whose context is a path inside this container
+      # does not, because /app does not exist on the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: apps/client/Dockerfile
+    container_name: ezpipeline-client
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # Vite watches with chokidar. macOS and Windows bind mounts do not
+      # reliably deliver inotify events into a Linux container, so the watcher
+      # sees nothing and HMR silently stops working - the page just never
+      # updates. Polling is the only dependable option here.
+      CHOKIDAR_USEPOLLING: "true"
+      # 1s: fast enough to feel immediate, slow enough not to spin a core on a
+      # tree this size.
+      CHOKIDAR_INTERVAL: "1000"
+    # Overrides only the CMD - apps/client/Dockerfile keeps the rest of the
+    # vite invocation in its ENTRYPOINT so it cannot drift between two files.
+    command: ["--port", "${CLIENT_PORT:-5173}"]
+    ports:
+      - "${CLIENT_PORT:-5173}:${CLIENT_PORT:-5173}"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/apps/server/node_modules
+      - /app/apps/client/node_modules
+    restart: unless-stopped
+
+  # The old behaviour of this file, kept and fixed rather than deleted.
+  #
+  # Before this rewrite, `docker compose up` built the root Dockerfile and ran
+  # one production container on 5000 with the client served from the server.
+  # That is a different thing from a dev stack and people may depend on it, so
+  # it lives on under a profile and does not start by default:
+  #
+  #   docker compose --profile prod up --build app
+  #
+  # It has no bind mount and no hot reload on purpose. It is the shipped
+  # artifact, and its whole point is that what runs is what was built.
+  app:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ezpipeline-app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: ${APP_PORT:-5000}
+      # A literal, not ${NODE_ENV:-...}. This service exists to run the
+      # production image the way production runs it; letting the value be
+      # inherited from a shell is how it ends up unset on a deploy.
+      NODE_ENV: production
+    ports:
+      - "${APP_PORT:-5000}:${APP_PORT:-5000}"
+    volumes:
+      # Same named volume as the dev server, so a pipeline you configured in
+      # one is there in the other.
+      - ezpipeline_data:/app/apps/server/data
+      # Build artifacts land on the host, where you can open them. This is the
+      # one mount the previous version of this file had, kept.
+      - ./apps/server/pipeline_workspace/PIPELINE_OUTPUT:/app/apps/server/pipeline_workspace/PIPELINE_OUTPUT
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  ezpipeline_data:

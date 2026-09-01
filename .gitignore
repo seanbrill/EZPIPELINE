@@ -90,6 +90,10 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+dist-ssr
+*.local
+compile
+
 
 # Gatsby files
 .cache/
@@ -134,3 +138,97 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+#.env
+*.env.*
+# ...but the TEMPLATE has to ship, or a clone has nothing to copy from.
+# `*.env.*` matched .env.example too, so the file existed on disk for
+# everyone who wrote it and for nobody who cloned the repo.
+!.env.example
+
+# Ignore all files *inside* PIPELINE_OUTPUT, but not the folder itself
+apps/server/pipeline_workspace/PIPELINE_OUTPUT/*
+!apps/server/pipeline_workspace/PIPELINE_OUTPUT/.gitkeep
+
+# Ignore all files *inside* PIPELINE_SSL, but not the folder itself
+apps/server/pipeline_workspace/PIPELINE_SSL/*
+!apps/server/pipeline_workspace/PIPELINE_SSL/.gitkeep
+
+# Ignore all files *inside* PIPELINE_SSH, but not the folder itself
+apps/server/pipeline_workspace/PIPELINE_SSH/*
+!apps/server/pipeline_workspace/PIPELINE_SSH/.gitkeep
+
+# Pipeline YAML is runtime data, and it is excluded WHERE IT LIVES - see the
+# apps/server/data/pipelines rule below - rather than by extension.
+#
+# This used to be a blanket `*.yaml` with three filename exceptions. It did
+# stop user pipelines being committed, and it would also have silently
+# swallowed the first .github/workflows/ci.yaml, k8s manifest or OpenAPI spec
+# anyone added, with no error and nothing on screen to explain it. A rule that
+# hides a file you meant to commit is as bad as one that commits a file you
+# meant to hide. There is no .yaml anywhere outside the pipeline data today,
+# so scoping this costs nothing and removes the trap.
+
+# Ignore all files *inside* Legacy_Things, but not the folder itself
+/Legacy_Things/*
+
+# Ignore tmp_uploads in global resources
+# Ignore contents of specific folders but keep folders
+apps/server/data/plugins/*
+!apps/server/data/plugins/.gitkeep
+
+apps/server/ai_sandbox/*
+!apps/server/ai_sandbox/.gitkeep
+
+apps/server/data/global/*
+!apps/server/data/global/.gitkeep
+
+# Pipeline working data. This rule was COMMENTED OUT, and with it off the
+# repo was about to publish 967MB of runtime state to a public remote: the
+# real FileFreak production and staging pipelines, their build history, a
+# release zip, and a full clone of the FileFreak.io repository sitting in a
+# workspace directory. None of that is this project's source, and one of them
+# is somebody else's codebase.
+#
+# The small Demo pipeline is the exception: 4KB of sample YAML, no real
+# infrastructure in it, and it gives a fresh install something to look at.
+apps/server/data/pipelines/*
+!apps/server/data/pipelines/.gitkeep
+!apps/server/data/pipelines/Demo/
+# The live database. app.db is a populated SQLite file holding the admin
+# account and its password hash - it is runtime state, not source, and this
+# repo has a public remote.
+apps/server/data/*.db
+apps/server/data/*.db-wal
+apps/server/data/*.db-shm
+apps/server/data/*.sqlite
+apps/server/data/*.sqlite3
+
+# macOS finder droppings
+.DS_Store
+**/.DS_Store
+
+# targets.json is a cached export of whatever pipelines this instance had
+# loaded. The copy on disk is the real FileFreak production definition, and
+# nothing in the codebase reads the file - grep finds zero references. It is
+# runtime residue, and on a public remote it is somebody's deployment config.
+/targets.json
+
+# A real JWT, left on disk by a headless test run. 161 bytes of live
+# credential that was about to be published.
+apps/server/.token
+*.token
+
+# Runtime logs. The `logs` rule above only covers the directory; this one was
+# a loose .txt beside the source, 744 lines with credential mentions in it.
+apps/server/server_log.txt
+*_log.txt
+
+# Vite build output, not source. apps/client/vite.config.ts sets
+# outDir: '../../apps/server/public', and the Dockerfile COPYs it out of the
+# builder stage, so the image builds it rather than reading it from here.
+# The filenames carry a content hash, so committing them means every build
+# adds a bundle and orphans the last one. 1.5MB of churn nobody reads.
+# The folder itself stays, because PUBLIC_DIR resolves to it at boot.
+apps/server/public/*
+!apps/server/public/.gitkeep

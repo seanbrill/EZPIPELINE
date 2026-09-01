@@ -1,0 +1,31 @@
+{
+  "name": "ezpipeline-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "reset-password": "node scripts/reset-password.mjs",
+    "test": "tsx --test apps/server/test/*.test.ts",
+    "dev:server": "npm run dev -w apps/server",
+    "dev:client": "npm run dev -w apps/client",
+    "build": "npm run build -ws",
+    "start": "tsx scripts/start-dev.ts",
+    "init": "npm install && npm install -ws",
+    "reset": "tsx scripts/reset-data.ts",
+    "clean": "npm run reset",
+    "package": "docker build -t ezpipeline .",
+    "build:dist": "./scripts/build-dist.sh",
+    "build:local": "./scripts/build-local.sh",
+    "docker:up": "node scripts/docker.mjs up",
+    "docker:down": "node scripts/docker.mjs down",
+    "docker:logs": "node scripts/docker.mjs logs",
+    "docker:rebuild": "node scripts/docker.mjs rebuild",
+    "docker:reset": "node scripts/docker.mjs reset",
+    "docker:sh": "docker compose exec server sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

@@ -1,0 +1,53 @@
+# What never reaches a build context.
+#
+# Docker uploads the whole context before it reads the first instruction, and
+# without this file that context is 1.9 GB. 1.5 GB of it is apps/server/data:
+# a downloaded azure-cli (381 MB), an azcopy binary (138 MB) and pipeline
+# workspaces holding entire git checkouts. Every build paid for that, twice,
+# because Dockerfile and Dockerfile.baked both use the root context.
+#
+# node_modules is excluded for a second and more painful reason. better-sqlite3
+# is a native module, compiled against the Node ABI and libc of the machine
+# that installed it. A macOS node_modules that reaches a Linux image fails at
+# require() with an error naming neither the platform nor the module. Every
+# image here runs its own npm ci, and docker-compose.yml masks the bind-mounted
+# host copy with anonymous volumes so it cannot leak back in at run time.
+
+.git
+.gitignore
+
+node_modules
+**/node_modules
+
+# Build output. Every image builds this itself; a stale host copy would
+# silently win. apps/client/dist on this machine is a week older than
+# apps/server/public, which is where vite.config.ts actually writes.
+apps/client/dist
+apps/server/public
+apps/server/compile
+**/*.tsbuildinfo
+
+# Runtime state. All of it belongs to a running instance, none of it to an
+# image - see the volume comments in docker-compose.yml.
+apps/server/data
+apps/server/logs
+apps/server/ai_sandbox
+apps/server/pipeline_workspace
+logs
+**/*.log
+apps/server/server_log.txt
+
+# Secrets. The root .env holds live SMTP credentials; an image containing it
+# hands them to anyone who can run docker history. Compose passes it in at run
+# time with env_file instead, where it stays on the host.
+.env
+.env.*
+apps/server/.token
+apps/client/login_response.json
+apps/client/login_response_admin.json
+
+# Editor and OS noise
+.DS_Store
+**/.DS_Store
+.vscode
+.idea

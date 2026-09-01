@@ -1,0 +1,22 @@
+{
+  "envTagColors": {
+    "staging": "cyan",
+    "dev": "slate",
+    "develop": "slate",
+    "production": "amber",
+    "prod": "amber",
+    "qa": "purple",
+    "uat": "fuchsia",
+    "development": "slate"
+  },
+  "envTagLabels": {
+    "staging": "STAGE",
+    "dev": "DEV",
+    "develop": "DEV",
+    "production": "PROD",
+    "prod": "PROD",
+    "qa": "QA",
+    "uat": "UAT",
+    "development": "DEV"
+  }
+}

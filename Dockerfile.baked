@@ -1,0 +1,57 @@
+# The shipped image, plus a copy of YOUR CURRENT apps/server/data baked in.
+#
+#   npm run build:local     -> ezpipeline-local:latest
+#
+# What it is for: handing someone a container that already has your database,
+# your pipeline definitions and your build history in it, so they can open it
+# and see a populated EZPIPELINE rather than a first-run setup screen. Demos,
+# bug reports, and moving an instance between machines.
+#
+# It is NOT the distribution image. `npm run build:dist` builds Dockerfile,
+# which starts empty. Read the two warnings below before you push this one
+# anywhere.
+#
+# This file used to repeat the whole of Dockerfile with two extra COPY lines,
+# which meant every fix to Dockerfile had to be made twice and, in practice,
+# was not. It now layers onto the built image instead, so there is one build
+# and one place where it can go wrong.
+
+ARG BASE_IMAGE=ezpipeline:latest
+FROM ${BASE_IMAGE}
+
+# WARNING 1 - SIZE. apps/server/data on this machine is 1.5 GB, and almost
+# none of it is yours: 381 MB is a downloaded azure-cli, 138 MB is an azcopy
+# binary, and 967 MB is one pipeline's checked-out client repository. Those are
+# things the running server re-downloads and re-clones on demand. If the image
+# comes out unreasonably large, clear apps/server/data/plugins and the
+# workspace directories before building - that is where it went.
+#
+# WARNING 2 - SECRETS. Everything under apps/server/data goes in, including
+# app.db with its bcrypt password hashes and MFA secrets, data/.env.global, and
+# every per-pipeline .env holding deploy credentials. Anyone who can pull this
+# image or read `docker history` has all of it. Treat the result as a secret,
+# not as a release.
+#
+# Why a named build context rather than a plain COPY of ./apps/server/data:
+# the root .dockerignore excludes that directory, because the 1.5 GB was being
+# uploaded to the daemon on EVERY build of every Dockerfile here, including
+# builds that did not want it. A named context has its own ignore rules, so
+# this one build can opt back in without making all the others pay. The
+# --build-context flag that supplies it is in scripts/build-local.sh.
+COPY --from=snapshot . /app/apps/server/data
+
+# The root .env is deliberately NOT baked in.
+#
+# The previous version of this file ended with `COPY /app/.env ./.env`, and
+# that .env carries a live Gmail app password for the SMTP account. An image
+# containing it hands that password to anyone who can pull it or run
+# `docker history` on it, permanently, because a deleted layer is still in the
+# image's history. There is no way to bake a secret into an image safely.
+#
+# Supply it at run time instead - the file stays on the host and never enters
+# a layer:
+#
+#   docker run --env-file .env -p 5000:5000 ezpipeline-local
+#
+# docker compose does this already: the `app` service in docker-compose.yml
+# uses `env_file: .env`.

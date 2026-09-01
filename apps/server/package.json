@@ -1,0 +1,53 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Open Source Node Based Deployment ?Tool",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc --build --force && node esbuild.config.js",
+    "dev": "tsx watch src/server.ts",
+    "start": "node compile/index.js",
+    "kill": "pm2 stop all && pm2 delete all && pm2 flush all"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@types/multer": "^2.0.0",
+    "@types/nodemailer": "^7.0.5",
+    "@types/socket.io": "^3.0.1",
+    "@types/uuid": "^10.0.0",
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.5.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.12",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0",
+    "winston": "^3.19.0",
+    "yaml": "^2.8.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.18",
+    "@types/express": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^24.10.4",
+    "@types/node-cron": "^3.0.11",
+    "concurrently": "^9.0.1",
+    "esbuild": "0.24.0",
+    "pm2": "^5.4.2",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "type": "module"
+}
