@@ -47,7 +47,26 @@ export class ConfigController {
                             let displayName = item.name;
                             let environment: string | undefined;
                             let pipelineId: string | undefined;
-                            const configFile = hasPipelineYaml ? 'pipeline.yaml' : (hasConfigYaml ? 'config.ezpipeline.yaml' : null);
+                            // Two known names first, then ANY yaml in a
+                            // .pipeline-marked directory.
+                            //
+                            // A bundle qualifies on the .pipeline marker alone,
+                            // but the id was only ever parsed out of these two
+                            // filenames, so a bundle whose file is named
+                            // anything else (the shipped Demo uses
+                            // demo-pipeline.yaml) got id: undefined. The
+                            // permission filter in routes/index.ts then drops
+                            // every node without an id, so it was created,
+                            // listed by /api/targets, and invisible in the file
+                            // tree.
+                            let configFile: string | null = hasPipelineYaml
+                                ? 'pipeline.yaml'
+                                : (hasConfigYaml ? 'config.ezpipeline.yaml' : null);
+                            if (!configFile && hasPipelineMarker) {
+                                configFile =
+                                    fs.readdirSync(fullPath)
+                                        .find((f) => /\.ya?ml$/i.test(f) && !f.startsWith('.')) ?? null;
+                            }
 
                             if (configFile) {
                                 try {

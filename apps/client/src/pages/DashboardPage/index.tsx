@@ -307,15 +307,28 @@ const DashboardPage: React.FC = () => {
         }
 
         try {
-            await fetch(`${API_URL}/api/config/create-folder`, {
+            const res = await fetch(`${API_URL}/api/config/create-folder`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: JSON.stringify({ type: 'yaml', path: finalPath })
             });
+            // fetch only rejects on a NETWORK failure, so an un-checked call
+            // reported "Group created!" for a 400, a 403 and a 500 alike. With
+            // the listing bug above it also meant a retry hit "Folder already
+            // exists", got a 500, and was toasted as another success. Endless
+            // green ticks, nothing ever appearing.
+            if (!res.ok) {
+                const detail = await res.json().catch(() => null);
+                toast.error(detail?.error || detail?.message || `Could not create the group (${res.status}).`);
+                return;
+            }
             toast.success("Group created!");
             fetchGroups(); // Refresh groups from server
             setSelectedGroup(finalPath);
-        } catch (e) { console.error(e); }
+        } catch (e) {
+            console.error(e);
+            toast.error("Could not reach the server to create the group.");
+        }
     };
 
     const deleteGroup = async (group: string) => {

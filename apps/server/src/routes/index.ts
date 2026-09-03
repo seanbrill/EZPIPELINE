@@ -869,7 +869,22 @@ router.get("/config/files", authenticateToken, (req, res) => {
                 }
                 if (node.type === 'directory') {
                     const children = node.children ? filterTree(node.children) : [];
-                    if (children.length > 0) return { ...node, children };
+                    // Two different reasons a directory can end up with no
+                    // children here, and they need opposite answers.
+                    //
+                    // Emptied BY THIS FILTER means you may not see what is
+                    // inside, so the directory itself stays hidden: showing it
+                    // would leak that pipelines exist.
+                    //
+                    // Empty ON DISK means there is nothing to hide, and it must
+                    // show. It used to be dropped, which made a newly created
+                    // group impossible to see: a new group is empty by
+                    // definition, so it vanished the moment it was made. The
+                    // create call succeeded every time and the folder simply
+                    // never appeared, which reads as "it will not let me create
+                    // a folder".
+                    const hadNone = (node.children || []).length === 0;
+                    if (children.length > 0 || hadNone) return { ...node, children };
                     return null;
                 }
                 // Hide raw files to prevent information leakage
