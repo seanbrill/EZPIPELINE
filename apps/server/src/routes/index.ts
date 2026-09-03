@@ -827,7 +827,21 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
     // Use id as target
     const pipelineTarget = pipeline.id;
 
-    // Execute independently
+    // ONE run per request.
+    //
+    // This started the same build TWICE: once here, and again from a
+    // setImmediate below that awaited run(target, build) with the same build
+    // object. Both executed, concurrently, in the same workspace.
+    //
+    // It was hard to see because it mostly looked like a logging fault - every
+    // line appeared twice - and the pipelines it was tried on were idempotent
+    // enough to survive it. The notch.fm provisioning pipeline was not: the two
+    // runs raced on `git clone` into one directory, so one reported "destination
+    // path already exists" and the other a genuine SSH failure, and neither
+    // error was about the real problem. Two concurrent `az deployment group
+    // create` calls against one resource group were next.
+    //
+    // pipeline.id rather than the request's `target`, which may be an appName.
     EZPipelineController.instance.run(pipelineTarget, build).catch(e => {
         Logger.getInstance().error(`Pipeline run failed for ${pipelineTarget}`, e);
     });
@@ -835,15 +849,6 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
     res.json({
         message: `Pipeline run initiated for target: ${target}`,
         buildId: build.id
-    });
-
-    // Trigger Execution (Async)
-    setImmediate(async () => {
-        try {
-            await EZPipelineController.instance.run(target, build);
-        } catch (e) {
-            Logger.getInstance().error(`Pipeline run failed for ${target}`, e);
-        }
     });
 });
 

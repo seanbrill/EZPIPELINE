@@ -111,6 +111,53 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub's SSH host keys, so `git clone git@github.com:...` works at all.
+#
+# Without them every SSH clone dies with "Host key verification failed", which
+# reads like a credentials problem and is not one - there was no ~/.ssh in this
+# image whatsoever.
+#
+# ssh-keyscan is trust-on-first-use, so the result is CHECKED against the
+# fingerprints GitHub publishes at
+# https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+# and the build fails if they disagree. A keyscan nobody verifies is a keyscan
+# that would happily bake in whatever answered on the network that day.
+#
+# StrictHostKeyChecking=no would also have "fixed" it, by turning off the check
+# that makes SSH worth using.
+RUN mkdir -p /root/.ssh \
+    && ssh-keyscan -t rsa,ecdsa,ed25519 github.com > /root/.ssh/known_hosts 2>/dev/null \
+    && for fp in \
+         "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU" \
+         "SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s" \
+         "SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM" ; do \
+         ssh-keygen -lf /root/.ssh/known_hosts | grep -q "$fp" \
+           || { echo "github.com host key $fp not found in keyscan output"; exit 1; }; \
+       done \
+    && chmod 700 /root/.ssh && chmod 600 /root/.ssh/known_hosts \
+    && echo "github.com host keys verified against published fingerprints"
+
+# Where a deploy key lives, if there is one.
+#
+# /root/.ssh is in the image and therefore lost on every recreate, so the KEY
+# is kept in the data volume and only this pointer is baked in. Generating a
+# key that a rebuild silently discards is worse than having none: the pipeline
+# works until the next `docker compose build` and then fails with an
+# authentication error nobody connects to the rebuild.
+#
+# IdentitiesOnly stops ssh offering every key it can find - without it an agent
+# with several keys can exhaust GitHub's auth attempt limit before reaching the
+# right one, which surfaces as "Permission denied" for a key that is present
+# and correct.
+RUN printf '%s\n' \
+      'Host github.com' \
+      '  User git' \
+      '  IdentityFile /app/apps/server/data/ssh/id_ed25519' \
+      '  IdentitiesOnly yes' \
+      '  StrictHostKeyChecking yes' \
+      > /root/.ssh/config \
+    && chmod 600 /root/.ssh/config
+
 # The Docker CLI, so that pipeline steps running `docker build` and
 # `docker push` find a binary. docker-compose.yml mounts the host's Docker
 # socket into this container, and that mount without a CLI is the interface
