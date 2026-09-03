@@ -24,13 +24,11 @@ export class SystemController {
             if (mode === 'smart') {
                 await this.resetService.resetUsers(); // Alias for DB
                 await this.resetService.resetPlugins();
-                await this.resetService.resetClaude();
                 await this.resetService.resetLogs();
                 await this.resetService.resetPipelines(false); // Smart reset pipelines
             } else if (mode === 'factory') { // Everything / "Nuke"
                 await this.resetService.resetUsers();
                 await this.resetService.resetPlugins();
-                await this.resetService.resetClaude();
                 await this.resetService.resetLogs();
                 await this.resetService.resetPipelines(true); // Full pipeline wipe
             } else {
@@ -39,7 +37,6 @@ export class SystemController {
                 if (mode === 'logs') await this.resetService.resetLogs();
                 if (mode === 'users') await this.resetService.resetUsers();
                 if (mode === 'plugins') await this.resetService.resetPlugins();
-                if (mode === 'claude') await this.resetService.resetClaude();
             }
 
             res.json({ success: true, message: "Reset action completed" });

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { DATA_DIR, SANDBOX_DIR } from '../config/index.js';
+import { DATA_DIR } from '../config/index.js';
 import Logger from '../controllers/Logger.js';
 
 export class ResetService {
@@ -20,7 +20,6 @@ export class ResetService {
             pipelines: path.join(DATA_DIR, 'pipelines'),
             plugins: path.join(DATA_DIR, 'plugins'),
             logs: path.resolve(DATA_DIR, '..', 'logs'), // Assuming logs are in apps/server/logs
-            sandbox: SANDBOX_DIR,
             db: path.join(DATA_DIR, 'app.db')
         };
     }
@@ -82,15 +81,6 @@ export class ResetService {
                     fs.unlinkSync(path.join(paths.logs, file));
                 }
             }
-        }
-    }
-
-    public async resetClaude() {
-        const paths = this.getPaths();
-        if (fs.existsSync(paths.sandbox)) {
-            Logger.getInstance().info("Resetting Claude Sandbox...");
-            fs.rmSync(paths.sandbox, { recursive: true, force: true });
-            fs.mkdirSync(paths.sandbox);
         }
     }
 

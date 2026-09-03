@@ -228,14 +228,6 @@ const SystemTab: React.FC = () => {
                         <button onClick={() => performReset('plugins', 'Plugins')} className="text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded border border-slate-600">Reset</button>
                     </div>
 
-                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700 flex items-center justify-between">
-                        <div>
-                            <h3 className="font-medium text-slate-200">Reset Claude Only</h3>
-                            <p className="text-xs text-slate-400">Clears AI sandbox</p>
-                        </div>
-                        <button onClick={() => performReset('claude', 'Claude Sandbox')} className="text-sm bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded border border-slate-600">Reset</button>
-                    </div>
-
                     <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700 flex items-center justify-between opacity-50">
                         <div>
                             <h3 className="font-medium text-slate-200">Global Build History</h3>

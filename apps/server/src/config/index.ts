@@ -17,7 +17,6 @@ let config = {
     paths: {
         data: 'apps/server/data',
         logs: 'apps/server/logs',
-        sandbox: 'apps/server/ai_sandbox'
     },
     auth: {
         required: true,
@@ -83,7 +82,6 @@ export const LOGS_DIR = resolvePath(config.paths.logs);
 export const DATA_DIR = resolvePath(config.paths.data);
 export const DB_PATH = path.join(DATA_DIR, 'app.db');
 export const PIPELINES_DIR = path.join(DATA_DIR, 'pipelines');
-export const SANDBOX_DIR = resolvePath(config.paths.sandbox);
 export const DOCS_DIR = resolvePath(path.join(ROOT_DIR, 'docs'));
 export const PUBLIC_DIR = path.resolve(__dirname, '../../public'); // Kept as build output
 

@@ -3,7 +3,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import Logger from '../controllers/Logger.js';
 
-import { DATA_DIR, SANDBOX_DIR } from '../config/index.js';
+import { DATA_DIR } from '../config/index.js';
 
 export interface Plugin {
     id: string;
@@ -129,21 +129,12 @@ export class PluginManager {
             description: 'Secure Shell client for remote access',
             isInstalled: false,
             checkCommand: 'ssh -V'
-        },
-        // AI Assistant
-        {
-            id: 'claude-code',
-            name: 'Claude Code',
-            description: 'AI coding assistant by Anthropic',
-            isInstalled: false,
-            checkCommand: 'claude --version'
         }
     ];
 
     private constructor() {
-        // We will use a dedicated directory for local plugins if possible, 
-        // but for system tools (aws, docker) we usually verify system installation.
-        // For 'claude-code', we might install locally.
+        // A dedicated directory for the plugins that install locally; system
+        // tools (docker, git, ssh) are only verified, never installed here.
         this.pluginsDir = path.resolve(DATA_DIR, 'plugins');
         if (!fs.existsSync(this.pluginsDir)) {
             fs.mkdirSync(this.pluginsDir, { recursive: true });
@@ -165,18 +156,7 @@ export class PluginManager {
 
         for (const plugin of this.availablePlugins) {
             try {
-                // Special check for claude-code which lives in sandbox
-                let checkCmd = plugin.checkCommand || `${plugin.id} --version`;
-
-                // For claude-code, we check the sandbox node_modules explicitly or rely on HEAD of PATH
-                if (plugin.id === 'claude-code') {
-                    const binPath = path.resolve(SANDBOX_DIR, 'node_modules', '.bin', 'claude');
-                    if (fs.existsSync(binPath)) {
-                        checkCmd = `"${binPath}" --version`;
-                    }
-                }
-
-                // Pass the modified env to checkVersion
+                const checkCmd = plugin.checkCommand || `${plugin.id} --version`;
                 const version = await this.checkVersion(checkCmd, env);
                 plugin.isInstalled = true;
                 plugin.version = version;
@@ -214,9 +194,6 @@ export class PluginManager {
 
     public getPluginBinPaths(): string[] {
         const paths: string[] = [];
-
-        // 1. Sandbox bin (for claude-code and potentially others)
-        paths.push(path.join(SANDBOX_DIR, 'node_modules', '.bin'));
 
         // 2. Installed plugins
         this.availablePlugins.forEach(p => {
@@ -320,10 +297,6 @@ export class PluginManager {
         if (!plugin) throw new Error("Plugin not found");
 
         // Special handling for Claude Code (Install in AI SANDBOX)
-        if (id === 'claude-code') {
-            await this.installNpmPackage('@anthropic-ai/claude-code', SANDBOX_DIR, onProgress);
-            return;
-        }
 
         const command = this.getInstallCommand(id);
         if (command) {

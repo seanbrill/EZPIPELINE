@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Download, Loader2, Check, Shield } from 'lucide-react';
+import { Key, Download, Loader2, Check } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
 
 import API_URL from '../../../config/api';
@@ -86,11 +86,6 @@ const PluginsTab: React.FC = () => {
                                     )}
                                 </div>
                                 <p className="text-sm text-slate-400 mt-2 leading-relaxed">{plugin.description}</p>
-                                {plugin.id === 'claude-code' && !plugin.isInstalled && (
-                                    <p className="text-xs text-yellow-500 mt-2 flex items-center gap-1 bg-yellow-500/10 p-2 rounded border border-yellow-500/20 inline-block">
-                                        <Shield className="w-3 h-3" /> Requires 'claude' CLI to be available on server.
-                                    </p>
-                                )}
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
