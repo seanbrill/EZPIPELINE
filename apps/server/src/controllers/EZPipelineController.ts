@@ -513,12 +513,27 @@ export default class EZPipelineController extends EventEmitter {
 
       // When using shell, pass the full command as a string to preserve quoting
       // Otherwise, spawn reconstructs it and loses our careful quote handling
+      //
+      // THE STEP'S OWN SHELL, not just "a shell". `shell: true` means /bin/sh
+      // on POSIX, which on Debian is dash - so a step declaring
+      // `shell: /bin/bash` and opening with `set -euo pipefail` died on
+      // "Illegal option -o pipefail" before running a line. The field was
+      // parsed, stored and threaded all the way down to here, and then
+      // dropped at the only point that could act on it.
+      //
+      // Node's spawn takes the shell PATH as a string, so passing it through
+      // is the whole fix. Anything that is not an absolute path is treated as
+      // a request for the default shell rather than handed to spawn, because
+      // spawn would otherwise try to execute it as a program and fail in a way
+      // that reads as the step being broken.
       const useShell = shell ?? true;
+      const shellPath =
+        typeof shell === "string" && shell.startsWith("/") ? shell : true;
       const child = useShell
         ? spawn(interpolatedCommand, [], {
           cwd: resolvedCwd,
           env,
-          shell: true,
+          shell: shellPath,
           windowsHide: true,
         })
         : spawn(cmd, args, {

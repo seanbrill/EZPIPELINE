@@ -86,12 +86,26 @@ RUN npm ci || { \
 #   openssh-client   git over ssh, which is what pipeline_workspace/PIPELINE_SSH
 #                    exists to hold keys for
 #   curl, ca-certificates  plugin downloads and TLS for all of the above
+#   python3-venv     `python3 -m venv` needs ensurepip, which Debian ships in a
+#                    separate package. Without it the azure-cli and aws-cli
+#                    plugin installers fail on their first line with
+#                    "ensurepip is not available" and leave a half made venv.
+#   libicu72         the Bicep CLI is a .NET binary and .NET refuses to start
+#                    without ICU: "Couldn't find a valid ICU package installed
+#                    on the system", printed as a 60 line stack trace after
+#                    `az bicep install` reports success. Installing it here
+#                    rather than at pipeline time because apt inside a running
+#                    container is lost on the next recreate, and a provisioning
+#                    run that works until you rebuild is worse than one that
+#                    never worked.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tini \
       bash \
       git \
       unzip \
       python3 \
+      python3-venv \
+      libicu72 \
       openssh-client \
       curl \
       ca-certificates \
