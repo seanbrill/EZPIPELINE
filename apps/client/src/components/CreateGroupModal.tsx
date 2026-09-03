@@ -20,8 +20,38 @@ const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ parentPath, onClose
             return;
         }
 
-        if (/[^a-zA-Z0-9\-_ ]/.test(trimmed)) {
-            setError("Folder name contains invalid characters");
+        // A dot is allowed, so a group can be called after a domain:
+        // "Notch.fm" was refused by the old character class, which is why the
+        // group beside it is named Notch-fm.
+        //
+        // Allowing the dot means the traversal cases have to be refused by
+        // name rather than fall out of the character class, so they are named
+        // explicitly below. The server refuses them too (ConfigController
+        // resolves the path and rejects anything landing outside the pipelines
+        // root); this is the message, not the security boundary.
+        if (/[^a-zA-Z0-9\-_. ]/.test(trimmed)) {
+            setError("Use letters, numbers, spaces, and - _ . only");
+            return;
+        }
+
+        // "." and ".." are directory entries that already exist everywhere,
+        // and a name that is only dots is never what somebody meant.
+        if (/^\.+$/.test(trimmed)) {
+            setError("That name is reserved");
+            return;
+        }
+
+        // A leading dot hides the folder on every unix-like system, and this
+        // one would be invisible in the sidebar for a reason nobody could see.
+        if (trimmed.startsWith(".")) {
+            setError("A folder name cannot start with a dot");
+            return;
+        }
+
+        // Separators would make one name into a path, and the parent is chosen
+        // by where you clicked rather than typed into this box.
+        if (/[\\/]/.test(trimmed)) {
+            setError("Use the folder tree to choose a parent, not a slash");
             return;
         }
 

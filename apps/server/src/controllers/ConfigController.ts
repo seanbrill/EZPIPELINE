@@ -183,7 +183,15 @@ export class ConfigController {
     public createFolder(type: "yaml" | "env", folderPath: string) {
         const fullPath = path.resolve(this.rootDir, folderPath);
 
-        if (!fullPath.startsWith(this.rootDir)) {
+        // Separator-aware, like getFileContent and saveFileContent.
+        //
+        // `startsWith(rootDir)` alone is true for a SIBLING directory: a root
+        // of /data/pipelines also admitted /data/pipelines-secrets. The other
+        // three call sites were corrected earlier and this one was missed,
+        // which matters more now that the name validation upstream allows a
+        // dot and therefore no longer refuses "..' by character class alone.
+        const root = path.resolve(this.rootDir);
+        if (fullPath !== root && !fullPath.startsWith(root + path.sep)) {
             throw new Error("Invalid folder path");
         }
 
