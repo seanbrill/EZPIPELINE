@@ -1,26 +1,17 @@
-import nodemailer from 'nodemailer';
+// The mail API the rest of the app calls.
+//
+// A thin face over services/mail, kept at this name and shape so the four
+// existing call sites did not have to change as part of adding providers. All
+// it does now is compose the two messages this app actually sends; choosing a
+// provider, resolving its configuration and decrypting its credentials belong
+// to MailService.
+
 import Logger from '../controllers/Logger.js';
-import { SettingsService } from './SettingsService.js';
-import { EMAIL_CONFIG } from '../config/index.js';
+import { MailService } from './mail/index.js';
 
 export class EmailService {
     private static instance: EmailService;
-    private fallbackTransporter: nodemailer.Transporter | null = null;
-
-    private constructor() {
-        // Initialize fallback transporter from centralized config
-        if (EMAIL_CONFIG.enabled && EMAIL_CONFIG.host) {
-            this.fallbackTransporter = nodemailer.createTransport({
-                host: EMAIL_CONFIG.host,
-                port: EMAIL_CONFIG.port,
-                secure: EMAIL_CONFIG.secure,
-                auth: {
-                    user: EMAIL_CONFIG.auth.user,
-                    pass: EMAIL_CONFIG.auth.pass
-                }
-            });
-        }
-    }
+    private constructor() { }
 
     public static getInstance(): EmailService {
         if (!EmailService.instance) {
@@ -29,63 +20,32 @@ export class EmailService {
         return EmailService.instance;
     }
 
-    private getTransporter(): { transporter: nodemailer.Transporter | null, from: string } {
-        // Try to get settings from DB
-        const settings = SettingsService.getInstance().getMultiple(['smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass', 'smtp_from']);
-
-        if (settings.smtp_host) {
-            const transporter = nodemailer.createTransport({
-                host: settings.smtp_host,
-                port: parseInt(settings.smtp_port || '587'),
-                secure: settings.smtp_secure === 'true',
-                auth: {
-                    user: settings.smtp_user || '',
-                    pass: settings.smtp_pass || '' // TODO: Handle decryption if we encrypt later
-                }
-            });
-            return {
-                transporter,
-                from: settings.smtp_from || '"EZPipeline" <noreply@ezpipeline.io>'
-            };
-        }
-
-        // Fallback
-        return {
-            transporter: this.fallbackTransporter,
-            from: EMAIL_CONFIG.from || '"EZPipeline" <noreply@ezpipeline.io>'
-        };
-    }
-
+    /**
+     * Returns whether it sent, as it always did.
+     *
+     * The REASON goes to the log rather than to the caller, because every
+     * caller here is a route that must not fail because mail failed - a
+     * verification code that cannot be sent is a sign-in to refuse, not a 500
+     * to raise. Callers wanting the reason should use MailService directly.
+     */
     public async sendEmail(to: string, subject: string, text: string, html?: string): Promise<boolean> {
-        const { transporter, from } = this.getTransporter();
-
-        if (!transporter) {
-            Logger.getInstance().warn('EmailService: No transporter configured. Skipping email.');
-            Logger.getInstance().info(`[MOCK EMAIL] To: ${to}, Subject: ${subject}, Text: ${text}`);
-            return false;
+        const result = await MailService.getInstance().send({ to, subject, text, html });
+        if (!result.ok && !MailService.getInstance().isConfigured()) {
+            // Said once and plainly. Previously this logged the entire message
+            // body as a "[MOCK EMAIL]" line, which put verification codes in
+            // the shared log view in plain text - readable by anyone who could
+            // open the dashboard.
+            Logger.getInstance().warn(
+                '[mail] no provider is configured, so nothing was sent. ' +
+                'Configure one in Settings > General.'
+            );
         }
-
-        try {
-            await transporter.sendMail({
-                from,
-                to,
-                subject,
-                text,
-                html
-            });
-            return true;
-        } catch (error) {
-            Logger.getInstance().error('EmailService: Failed to send email', error);
-            return false;
-        }
+        return result.ok;
     }
 
     public async sendMFACode(email: string, code: string): Promise<boolean> {
         const subject = 'Your EZPipeline Verification Code';
         const text = `Your verification code is: ${code}\n\nThis code will expire in 10 minutes.`;
-
-
-
         const html = `
             <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
                 <h1 style="color: #10B981;">EZPipeline</h1>

@@ -81,8 +81,8 @@ const GeneralTab: React.FC = () => {
                 </div>
             </div>
 
-            {/* SMTP Settings (Admin Only) */}
-            <SMTPSettings />
+            {/* Email, admin only. Provider-driven; see MailSettings. */}
+            <MailSettings />
         </div>
     );
 };
@@ -242,89 +242,130 @@ import { Mail, Check, RefreshCw, Send } from 'lucide-react';
 
 // ... existing GeneralTab component
 
-const SMTPSettings: React.FC = () => {
+interface MailField {
+    key: string;
+    label: string;
+    type: 'text' | 'number' | 'boolean' | 'secret';
+    placeholder?: string;
+    required: boolean;
+    hint?: string;
+    value?: string;
+    isSet?: boolean;
+}
+
+interface MailProviderMeta {
+    id: string;
+    label: string;
+    blurb: string;
+    fields: MailField[];
+}
+
+/**
+ * Email configuration, for whichever provider is chosen.
+ *
+ * THE FORM IS GENERATED from what the server says each provider needs, rather
+ * than hand-written per provider. The hand-written SMTP form is exactly how
+ * this drifted from the route behind it: the form sent a password, the route
+ * stored it, and the GET route handed it back unmasked, with nothing tying the
+ * three together.
+ *
+ * A secret is never sent to this component - only whether one is stored - so
+ * its input starts empty and an empty input means "leave it alone". That is
+ * the normal state of an unedited form, and treating blank as "clear it" would
+ * wipe the credential every time somebody fixed a typo in the sender address.
+ */
+const MailSettings: React.FC = () => {
     const { token, isAdmin } = useAuth();
-    const [settings, setSettings] = useState({
-        host: '',
-        port: 587,
-        secure: false,
-        user: '',
-        pass: '',
-        from: ''
-    });
+    const [providers, setProviders] = useState<MailProviderMeta[]>([]);
+    const [selected, setSelected] = useState<string>('');
+    const [fields, setFields] = useState<MailField[]>([]);
+    const [values, setValues] = useState<Record<string, string>>({});
+    const [configured, setConfigured] = useState(false);
     const [loading, setLoading] = useState(false);
     const [testing, setTesting] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
     const [testMessage, setTestMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
     const [emailToTest, setEmailToTest] = useState('');
 
-    // Fetch settings on mount
+    const authHeaders = { Authorization: `Bearer ${token}` };
+
     React.useEffect(() => {
         if (!isAdmin) return;
-        fetch(`${API_URL}/api/settings/smtp`, {
-            headers: { Authorization: `Bearer ${token}` }
-        })
-            .then(res => res.json())
-            .then(data => {
-                if (data && !data.error) {
-                    setSettings({
-                        host: data.host || '',
-                        port: data.port || 587,
-                        secure: data.secure || false,
-                        user: data.user || '',
-                        pass: data.pass || '', // Often masked
-                        from: data.from || ''
-                    });
-                }
+        fetch(`${API_URL}/api/settings/mail/providers`, { headers: authHeaders })
+            .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+            .then(d => {
+                setProviders(d.providers ?? []);
+                setSelected(d.selected ?? '');
+                setConfigured(!!d.configured);
             })
-            .catch(console.error);
+            .catch(() => setMessage({ type: 'error', text: 'Could not load the mail providers.' }));
     }, [isAdmin, token]);
 
-    const handleSave = async () => {
+    // Load the chosen provider's stored values whenever the choice changes.
+    React.useEffect(() => {
+        if (!isAdmin || !selected) return;
+        fetch(`${API_URL}/api/settings/mail?provider=${encodeURIComponent(selected)}`, { headers: authHeaders })
+            .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+            .then(d => {
+                setFields(d.fields ?? []);
+                const next: Record<string, string> = {};
+                for (const f of (d.fields ?? []) as MailField[]) {
+                    // Secrets stay blank: the server does not send them.
+                    next[f.key] = f.type === 'secret' ? '' : (f.value ?? '');
+                }
+                setValues(next);
+            })
+            .catch(() => setMessage({ type: 'error', text: 'Could not load these settings.' }));
+    }, [selected, isAdmin, token]);
+
+    const save = async () => {
         setLoading(true);
         setMessage(null);
         try {
-            const res = await fetch(`${API_URL}/api/settings/smtp`, {
+            const res = await fetch(`${API_URL}/api/settings/mail`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify(settings)
+                headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: selected, values }),
             });
-            const data = await res.json();
-            if (res.ok) {
-                setMessage({ type: 'success', text: "SMTP Settings saved successfully." });
-            } else {
-                setMessage({ type: 'error', text: data.error || "Failed to save settings." });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            setMessage({ type: 'success', text: 'Saved.' });
+            // Re-read, so "stored" indicators reflect what actually landed.
+            const fresh = await fetch(`${API_URL}/api/settings/mail?provider=${encodeURIComponent(selected)}`, { headers: authHeaders });
+            if (fresh.ok) {
+                const d = await fresh.json();
+                setFields(d.fields ?? []);
+                setValues(v => {
+                    const next = { ...v };
+                    for (const f of (d.fields ?? []) as MailField[]) if (f.type === 'secret') next[f.key] = '';
+                    return next;
+                });
             }
+            setConfigured(true);
         } catch (e) {
-            setMessage({ type: 'error', text: "Network error saving settings." });
+            setMessage({ type: 'error', text: e instanceof Error ? e.message : 'Could not save.' });
         } finally {
             setLoading(false);
         }
     };
 
-    const handleTest = async () => {
+    const sendTest = async () => {
         setTesting(true);
         setTestMessage(null);
         try {
-            const res = await fetch(`${API_URL}/api/settings/smtp/test`, {
+            const res = await fetch(`${API_URL}/api/settings/mail/test`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({ to: emailToTest || settings.from || 'test@example.com' })
+                headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to: emailToTest }),
             });
-            const data = await res.json();
-            if (res.ok) {
-                setTestMessage({ type: 'success', text: `Test email sent! ${data.info?.messageId || ''}` });
-            } else {
-                setTestMessage({ type: 'error', text: data.error || "Failed to send test email." });
-            }
+            const data = await res.json().catch(() => ({}));
+            // The provider's own reason, shown in full. "Check server logs" is
+            // the least useful sentence available when the real problem is a
+            // sender address the provider has not verified.
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            setTestMessage({ type: 'success', text: data.message || 'Test message sent.' });
         } catch (e) {
-            setTestMessage({ type: 'error', text: "Network error sending test." });
+            setTestMessage({ type: 'error', text: e instanceof Error ? e.message : 'Could not send.' });
         } finally {
             setTesting(false);
         }
@@ -332,128 +373,116 @@ const SMTPSettings: React.FC = () => {
 
     if (!isAdmin) return null;
 
+    const current = providers.find(p => p.id === selected);
+    const inputCls = "w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none";
+
     return (
-        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm mt-8">
-            <h2 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
-                <Mail className="w-5 h-5 text-purple-500" />
-                Email Configuration (SMTP)
+        <div className="bg-slate-900/50 p-4 sm:p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm mt-8">
+            <h2 className="text-lg sm:text-xl font-semibold mb-1 text-white flex items-center gap-2">
+                <Mail className="w-5 h-5 text-purple-500 shrink-0" />
+                Email
             </h2>
+            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
+                Used for verification codes and notifications. An API provider is
+                preferable to SMTP: the key it issues can only send mail, where an
+                SMTP password is access to a whole mailbox.
+                {!configured && <span className="text-yellow-500"> Nothing is configured yet, so no mail is being sent.</span>}
+            </p>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                    <label className="block text-xs text-slate-500 mb-1.5 font-medium">SMTP Host</label>
-                    <input
-                        type="text"
-                        placeholder="smtp.gmail.com"
-                        value={settings.host}
-                        onChange={e => setSettings({ ...settings, host: e.target.value })}
-                        className="w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none"
-                    />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className="block text-xs text-slate-500 mb-1.5 font-medium">Port</label>
-                        <input
-                            type="number"
-                            placeholder="587"
-                            value={settings.port}
-                            onChange={e => setSettings({ ...settings, port: parseInt(e.target.value) })}
-                            className="w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none"
-                        />
-                    </div>
-                    <div className="flex items-center pt-6">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                checked={settings.secure}
-                                onChange={e => setSettings({ ...settings, secure: e.target.checked })}
-                                className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-purple-600 focus:ring-purple-500"
-                            />
-                            <span className="text-sm text-slate-300">Secure (SSL/TLS)</span>
+            <label className="block text-xs text-slate-500 mb-1.5 font-medium">Provider</label>
+            <select
+                value={selected}
+                onChange={e => { setSelected(e.target.value); setMessage(null); setTestMessage(null); }}
+                className={inputCls + " mb-2"}
+            >
+                {providers.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+            {current && <p className="text-xs text-slate-400 mb-5 leading-relaxed">{current.blurb}</p>}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                {fields.map(f => (
+                    <div key={f.key} className={f.type === 'boolean' ? 'md:col-span-2' : ''}>
+                        <label htmlFor={`mail-${f.key}`} className="block text-xs text-slate-500 mb-1.5 font-medium">
+                            {f.label}
+                            {f.required && <span className="text-slate-600"> (required)</span>}
+                            {f.type === 'secret' && f.isSet && (
+                                <span className="ml-2 text-emerald-500">stored</span>
+                            )}
                         </label>
-                    </div>
-                </div>
 
-                <div>
-                    <label className="block text-xs text-slate-500 mb-1.5 font-medium">Username</label>
-                    <input
-                        type="text"
-                        placeholder="user@example.com"
-                        value={settings.user}
-                        onChange={e => setSettings({ ...settings, user: e.target.value })}
-                        className="w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none"
-                    />
-                </div>
-                <div>
-                    <label className="block text-xs text-slate-500 mb-1.5 font-medium">Password</label>
-                    <div className="relative">
-                        <input
-                            type="password"
-                            placeholder="••••••••"
-                            value={settings.pass}
-                            onChange={e => setSettings({ ...settings, pass: e.target.value })}
-                            className="w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none"
-                        />
+                        {f.type === 'boolean' ? (
+                            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                                <input
+                                    id={`mail-${f.key}`}
+                                    type="checkbox"
+                                    checked={values[f.key] === 'true'}
+                                    onChange={e => setValues(v => ({ ...v, [f.key]: String(e.target.checked) }))}
+                                />
+                                {f.hint ?? f.label}
+                            </label>
+                        ) : (
+                            <input
+                                id={`mail-${f.key}`}
+                                type={f.type === 'secret' ? 'password' : f.type === 'number' ? 'number' : 'text'}
+                                autoComplete={f.type === 'secret' ? 'new-password' : 'off'}
+                                placeholder={f.type === 'secret' && f.isSet ? 'leave blank to keep the stored value' : (f.placeholder ?? '')}
+                                value={values[f.key] ?? ''}
+                                onChange={e => setValues(v => ({ ...v, [f.key]: e.target.value }))}
+                                className={inputCls}
+                            />
+                        )}
+                        {f.hint && f.type !== 'boolean' && (
+                            <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{f.hint}</p>
+                        )}
                     </div>
-                </div>
-
-                <div className="md:col-span-2">
-                    <label className="block text-xs text-slate-500 mb-1.5 font-medium">From Address</label>
-                    <input
-                        type="text"
-                        placeholder="EZPipeline <noreply@ezpipeline.io>"
-                        value={settings.from}
-                        onChange={e => setSettings({ ...settings, from: e.target.value })}
-                        className="w-full bg-black/40 border border-slate-700 rounded-lg p-2.5 text-white placeholder-slate-600 focus:border-purple-500 outline-none"
-                    />
-                </div>
+                ))}
             </div>
 
-            <div className="flex items-center justify-between mt-6 pt-6 border-t border-slate-700/50">
-                <div className="flex items-center gap-4">
-                    <button
-                        onClick={handleSave}
-                        disabled={loading}
-                        className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-bold shadow-lg shadow-purple-900/20 transition-all disabled:opacity-50"
-                    >
-                        {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                        Save Settings
-                    </button>
-                    {message && (
-                        <span className={`text-sm ${message.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {message.text}
-                        </span>
-                    )}
-                </div>
+            <div className="mt-6 flex flex-col sm:flex-row sm:items-center gap-3">
+                <button
+                    onClick={save}
+                    disabled={loading || !selected}
+                    className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium w-full sm:w-auto"
+                >
+                    {loading ? 'Saving...' : 'Save'}
+                </button>
+                {message && (
+                    <span role="status" className={`text-sm ${message.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {message.text}
+                    </span>
+                )}
+            </div>
 
-                <div className="flex items-center gap-2">
+            <div className="mt-6 pt-6 border-t border-slate-700">
+                <label htmlFor="mail-test-to" className="block text-xs text-slate-500 mb-1.5 font-medium">
+                    Send a test message
+                </label>
+                <div className="flex flex-col sm:flex-row gap-3">
                     <input
+                        id="mail-test-to"
                         type="email"
-                        placeholder="Test email recipient"
+                        placeholder="you@example.com"
                         value={emailToTest}
                         onChange={e => setEmailToTest(e.target.value)}
-                        className="bg-black/40 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none w-48"
+                        className={inputCls}
                     />
                     <button
-                        onClick={handleTest}
-                        disabled={testing || !settings.host}
-                        className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50"
+                        onClick={sendTest}
+                        disabled={testing || !emailToTest.includes('@')}
+                        className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap w-full sm:w-auto"
                     >
-                        {testing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                        Test
+                        {testing ? 'Sending...' : 'Send test'}
                     </button>
                 </div>
+                {testMessage && (
+                    <p role="status" className={`text-sm mt-3 leading-relaxed ${testMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {testMessage.text}
+                    </p>
+                )}
+                <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                    Saves are not needed first if nothing changed - the test uses what is stored.
+                </p>
             </div>
-            {testMessage && (
-                <div className={`mt-2 text-right text-sm ${testMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {testMessage.text}
-                </div>
-            )}
         </div>
     );
 };
-
-export default GeneralTab;
-
-
-

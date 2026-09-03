@@ -18,6 +18,7 @@ import { AgentService } from "../services/AgentService.js";
 import { SchedulerService } from "../services/SchedulerService.js";
 import { PluginManager } from "../services/PluginManager.js";
 import { EmailService } from "../services/EmailService.js";
+import { MailService, PROVIDERS, providerById } from "../services/mail/index.js";
 import { SettingsService } from "../services/SettingsService.js";
 import globalEnvRouter from "./globalEnv.js";
 import { DATA_DIR, PORT, PUBLIC_DIR, EMAIL_CONFIG, PIPELINES_DIR, AUTH_CONFIG } from "../config/index.js";
@@ -1800,148 +1801,94 @@ router.post("/pipelines/:targetName/rollback", authenticateToken, async (req, re
 });
 
 // Settings Routes
-router.get("/settings/smtp", authenticateToken, (req, res) => {
-    const user = (req as any).user;
-    // Admin only
-    if (!permissionsService.checkAccess(user.id, 'system', 'write')) { // Assuming 'system' write is admin
-        // Or check isAdmin flag if available on user object from token
-        if (!user.isAdmin) {
-            res.status(403).json({ error: "Access denied" });
-            return;
-        }
-    }
+// ── Mail ────────────────────────────────────────────────────────────────────
+//
+// Provider-agnostic. These replaced three SMTP-only routes, one of which
+// returned the stored password to the browser UNMASKED - it masked the value
+// that came from the environment and not the one in the database, which is the
+// wrong way round, since the database one is the one an operator typed and
+// forgot about.
+//
+// NO ROUTE HERE EVER RETURNS A CREDENTIAL. The form is told whether each secret
+// is set, which is all it needs to render, and a blank secret on save means
+// "unedited" rather than "clear it".
 
-    try {
-        const settings = SettingsService.getInstance().getMultiple(['smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass', 'smtp_from']);
-
-
-
-        res.json({
-            host: settings.smtp_host || EMAIL_CONFIG.host || '',
-            port: settings.smtp_port ? parseInt(settings.smtp_port) : (EMAIL_CONFIG.port || 587),
-            secure: settings.smtp_secure ? (settings.smtp_secure === 'true') : (EMAIL_CONFIG.secure || false),
-            user: settings.smtp_user || EMAIL_CONFIG.auth.user || '',
-            pass: settings.smtp_pass || (EMAIL_CONFIG.auth.pass ? '********' : ''), // Mask env pass if exists
-            from: settings.smtp_from || EMAIL_CONFIG.from || ''
-        });
-    } catch (e) {
-        Logger.getInstance().error("Failed to fetch SMTP settings", e);
-        res.status(500).json({ error: "Internal server error" });
-    }
-});
-
-router.post("/settings/smtp", authenticateToken, (req, res) => {
+router.get("/settings/mail/providers", authenticateToken, (req, res) => {
     const user = (req as any).user;
     if (!user.isAdmin) {
         res.status(403).json({ error: "Access denied" });
         return;
     }
+    const mail = MailService.getInstance();
+    res.json({
+        selected: mail.selectedProviderId(),
+        configured: mail.isConfigured(),
+        providers: PROVIDERS.map(p => ({
+            id: p.id,
+            label: p.label,
+            blurb: p.blurb,
+            fields: p.fields,
+        })),
+    });
+});
 
-    const { host, port, secure, user: smtpUser, pass, from } = req.body;
+router.get("/settings/mail", authenticateToken, (req, res) => {
+    const user = (req as any).user;
+    if (!user.isAdmin) {
+        res.status(403).json({ error: "Access denied" });
+        return;
+    }
+    const mail = MailService.getInstance();
+    const which = typeof req.query.provider === "string" ? req.query.provider : mail.selectedProviderId();
+    if (!providerById(which)) {
+        res.status(404).json({ error: "Unknown mail provider" });
+        return;
+    }
+    res.json({ ...mail.describeConfig(which), selected: mail.selectedProviderId() });
+});
 
+router.post("/settings/mail", authenticateToken, (req, res) => {
+    const user = (req as any).user;
+    if (!user.isAdmin) {
+        res.status(403).json({ error: "Access denied" });
+        return;
+    }
+    const { provider, values } = req.body ?? {};
+    if (typeof provider !== "string" || !providerById(provider)) {
+        res.status(400).json({ error: "A known provider id is required" });
+        return;
+    }
     try {
-        const settingsService = SettingsService.getInstance();
-
-        if (host !== undefined) settingsService.set('smtp_host', host);
-        if (port !== undefined) settingsService.set('smtp_port', String(port));
-        if (secure !== undefined) settingsService.set('smtp_secure', String(secure));
-        if (smtpUser !== undefined) settingsService.set('smtp_user', smtpUser);
-        if (from !== undefined) settingsService.set('smtp_from', from);
-
-        // Only update password if provided and not masked
-        if (pass && pass !== '********') {
-            settingsService.set('smtp_pass', pass);
-        }
-
-        Logger.getInstance().info(`User ${user.username} updated SMTP settings`);
+        MailService.getInstance().saveConfig(provider, (values ?? {}) as Record<string, unknown>);
+        // The provider is named; the values are not, because half of them are
+        // credentials and this line goes to the shared log view.
+        Logger.getInstance().info(`User ${user.username} saved mail settings for ${provider}`);
         res.json({ message: "Settings saved" });
     } catch (e) {
-        Logger.getInstance().error("Failed to save SMTP settings", e);
+        Logger.getInstance().error("Failed to save mail settings", e);
         res.status(500).json({ error: "Failed to save settings" });
     }
 });
 
-// Security Settings Routes
-router.get("/settings/security", authenticateToken, (req, res) => {
+router.post("/settings/mail/test", authenticateToken, async (req, res) => {
     const user = (req as any).user;
     if (!user.isAdmin) {
         res.status(403).json({ error: "Access denied" });
         return;
     }
-
-    try {
-        const enforced = SettingsService.getInstance().get('mfa_enforced') === 'true';
-        res.json({ mfa_enforced: enforced });
-    } catch (e) {
-        Logger.getInstance().error("Failed to fetch security settings", e);
-        res.status(500).json({ error: "Internal server error" });
-    }
-});
-
-router.post("/settings/security", authenticateToken, (req, res) => {
-    const user = (req as any).user;
-    if (!user.isAdmin) {
-        res.status(403).json({ error: "Access denied" });
+    const { to } = req.body ?? {};
+    if (typeof to !== "string" || !to.includes("@")) {
+        res.status(400).json({ error: "A recipient address is required" });
         return;
     }
-
-    const { mfa_enforced } = req.body;
-
-    try {
-        if (mfa_enforced !== undefined) {
-            // Check if Admin has MFA enabled before allowing enforcement
-            // We need to fetch the current user record freshly to be sure
-            const db = DatabaseService.getInstance().getDb();
-            const currentUser = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as any;
-
-            if (mfa_enforced && !currentUser.mfa_enabled) {
-                if (!currentUser.email) {
-                    res.status(400).json({ error: "Your admin account must have an email configured to enforce MFA." });
-                    return;
-                }
-                // Auto-enable MFA for Admin so they don't get locked out or blocked
-                db.prepare("UPDATE users SET mfa_enabled = 1 WHERE id = ?").run(user.id);
-                Logger.getInstance().info(`Auto-enabled MFA for admin ${user.username} during system enforcement.`);
-            }
-
-            SettingsService.getInstance().set('mfa_enforced', String(mfa_enforced));
-        }
-        res.json({ message: "Security settings updated" });
-    } catch (e: any) {
-        Logger.getInstance().error("Failed to update security settings", e);
-        res.status(500).json({ error: "Failed to update settings" });
-    }
-});
-
-router.post("/settings/smtp/test", authenticateToken, async (req, res) => {
-    const user = (req as any).user;
-    if (!user.isAdmin) {
-        res.status(403).json({ error: "Access denied" });
-        return;
-    }
-
-    const { to } = req.body;
-    if (!to) {
-        res.status(400).json({ error: "Recipient address required" });
-        return;
-    }
-
-    try {
-        const success = await EmailService.getInstance().sendEmail(
-            to,
-            "EZPipeline Test Email",
-            "This is a test email to verify your SMTP configuration.",
-            "<h1>SMTP Configuration Verified</h1><p>You have successfully configured email settings for EZPipeline.</p>"
-        );
-
-        if (success) {
-            res.json({ message: "Test email sent" });
-        } else {
-            res.status(500).json({ error: "Failed to send email. Check server logs." });
-        }
-    } catch (e) {
-        Logger.getInstance().error("Failed to send test email", e);
-        res.status(500).json({ error: "Failed to send test email" });
+    // The provider's OWN reason is returned. "Check server logs" was the old
+    // answer, and it is the least useful sentence available when the actual
+    // problem is a sender address the provider has not verified.
+    const result = await MailService.getInstance().verify(to);
+    if (result.ok) {
+        res.json({ message: "Test message sent" });
+    } else {
+        res.status(400).json({ error: result.error ?? "The provider did not accept the message" });
     }
 });
 
