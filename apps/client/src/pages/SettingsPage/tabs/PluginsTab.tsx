@@ -123,9 +123,25 @@ const PluginsTab: React.FC = () => {
                     ))
                 )}
 
-                {installingPlugin && (
+                {/* Shown whenever there IS output, not only while a run is in
+                    flight. It used to be gated on installingPlugin, which the
+                    finally block clears the moment the install ends: the panel
+                    unmounted and took every line with it, including the error.
+                    A failure that takes two seconds looked exactly like
+                    clicking the button and nothing happening. */}
+                {installLogs && (
                     <div className="mt-6 bg-black rounded-xl border border-slate-800 p-4 font-mono text-xs text-green-400 h-48 overflow-y-auto whitespace-pre-wrap shadow-inner relative">
-                        <div className="absolute top-2 right-2 text-[10px] text-slate-600 uppercase font-bold">Installation Logs</div>
+                        <div className="absolute top-2 right-2 flex items-center gap-2">
+                            <span className="text-[10px] text-slate-600 uppercase font-bold">Installation Logs</span>
+                            {!installingPlugin && (
+                                <button
+                                    onClick={() => setInstallLogs("")}
+                                    className="text-[10px] text-slate-500 hover:text-slate-300 uppercase font-bold"
+                                >
+                                    Clear
+                                </button>
+                            )}
+                        </div>
                         {installLogs}
                     </div>
                 )}

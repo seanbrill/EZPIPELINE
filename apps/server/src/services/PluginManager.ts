@@ -259,7 +259,16 @@ export class PluginManager {
             },
             'azure-cli': {
                 'darwin': 'python3 -m venv venv && ./venv/bin/pip install azure-cli',
-                'linux': 'python3 -m venv venv && ./venv/bin/pip install azure-cli'
+                // ensurepip is not in Debian's base python3, so `python3 -m venv`
+                // fails with "ensurepip is not available" and leaves a half made
+                // venv behind. The server image is Debian bookworm, so the venv
+                // package is installed first when it is missing.
+                //
+                // apt installs outside the data volume and is lost on a container
+                // recreate; the VENV is inside it and survives, and a recreated
+                // container has the same system python at the same path, so the
+                // venv keeps working. Only a re-install would need apt again.
+                'linux': 'if ! python3 -c "import ensurepip" 2>/dev/null; then apt-get update -qq && apt-get install -y -qq python3-venv; fi && rm -rf venv && python3 -m venv venv && ./venv/bin/pip install --quiet --upgrade pip && ./venv/bin/pip install azure-cli'
             },
             'azcopy': {
                 'darwin': 'curl -L "https://aka.ms/downloadazcopy-v10-mac" -o azcopy.zip && unzip -o azcopy.zip && mkdir -p bin && cp azcopy_darwin_amd64_*/azcopy ./bin/ && chmod +x ./bin/azcopy',
