@@ -75,7 +75,11 @@ const PluginsTab: React.FC = () => {
                             <div className="flex-1">
                                 <div className="flex items-center gap-3">
                                     <h3 className="font-bold text-white text-lg">{plugin.name}</h3>
-                                    {plugin.isInstalled ? (
+                                    {plugin.builtin ? (
+                                        <span className="text-xs bg-slate-700/60 text-slate-300 px-2 py-0.5 rounded-full flex items-center gap-1 border border-slate-600 font-medium">
+                                            <Check className="w-3 h-3" /> Included {plugin.version && `v${plugin.version}`}
+                                        </span>
+                                    ) : plugin.isInstalled ? (
                                         <span className="text-xs bg-emerald-500/10 text-emerald-500 px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-500/20 font-medium">
                                             <Check className="w-3 h-3" /> Installed {plugin.version && `v${plugin.version}`}
                                         </span>
@@ -89,7 +93,18 @@ const PluginsTab: React.FC = () => {
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
-                                {plugin.isInstalled ? (
+                                {/* A built-in gets NO control.
+                                    Five of these had no installer wired at all
+                                    and still rendered an Install button, so
+                                    pressing it could only fail. A control that
+                                    cannot do anything is worse than none: it
+                                    makes a person doubt the ones that work. The
+                                    row still appears, because "is git available
+                                    to my pipeline?" is a real question - it just
+                                    answers it instead of offering to fix it. */}
+                                {plugin.builtin ? (
+                                    <span className="px-4 py-2 text-sm text-slate-500">Part of the image</span>
+                                ) : plugin.isInstalled ? (
                                     <button className="px-4 py-2 bg-slate-800 text-slate-500 rounded-lg text-sm font-medium cursor-not-allowed border border-slate-700" disabled>
                                         Installed
                                     </button>

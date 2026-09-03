@@ -153,13 +153,41 @@ const DashboardPage: React.FC = () => {
         fetchPipelines();
         fetchBuildHistory();
 
-        const eventSource = new EventSource(`${API_URL}/api/logs-stream?token=${token}`);
+        // A TICKET, not the session token.
+        //
+        // EventSource cannot set headers, so whatever authenticates it has to
+        // travel in the URL - and a URL ends up in the server's access log, in
+        // any proxy, in browser history and in the Referer of anything the page
+        // loads next. This used to put the admin JWT there.
+        //
+        // The ticket is fetched over a normal authenticated POST, where headers
+        // work, and is good for thirty seconds and one connection. It still
+        // appears in the URL and that no longer matters.
+        let eventSource: EventSource | null = null;
+        let cancelled = false;
 
-        eventSource.onopen = () => {
-            setLogs((prev) => [...prev, '>>> Connected to Live Stream <<<']);
-        };
+        void (async () => {
+            try {
+                const res = await fetch(`${API_URL}/api/logs-stream/ticket`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                });
+                if (!res.ok) throw new Error(`ticket ${res.status}`);
+                const { ticket } = await res.json();
+                if (cancelled) return;
+                eventSource = new EventSource(`${API_URL}/api/logs-stream?ticket=${encodeURIComponent(ticket)}`);
+                wire(eventSource);
+            } catch {
+                setLogs((prev) => [...prev, '>>> Could not open the live stream <<<']);
+            }
+        })();
 
-        eventSource.onmessage = (event) => {
+        function wire(es: EventSource) {
+            es.onopen = () => {
+                setLogs((prev) => [...prev, '>>> Connected to Live Stream <<<']);
+            };
+
+            es.onmessage = (event) => {
             try {
                 const payload = JSON.parse(event.data);
 
@@ -184,13 +212,18 @@ const DashboardPage: React.FC = () => {
                     fetchBuildHistory();
                 }
 
-            } catch (e) {
-                setLogs((prev) => [...prev, event.data]);
-            }
-        };
+                } catch (e) {
+                    setLogs((prev) => [...prev, event.data]);
+                }
+            };
+        }
 
         return () => {
-            eventSource.close();
+            // Set before the stream may even exist: the ticket request is
+            // async, so an unmount can land while it is still in flight and
+            // the connection would otherwise be opened after cleanup ran.
+            cancelled = true;
+            eventSource?.close();
         };
     }, [token]);
 

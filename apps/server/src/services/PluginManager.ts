@@ -13,6 +13,20 @@ export interface Plugin {
     version?: string;
     installCommand?: string; // If auto-installable
     checkCommand?: string;
+    /**
+     * Baked into the server image, so there is nothing to install.
+     *
+     * Five of these had no installer at all and still rendered an Install
+     * button: pressing it could only ever fail, because the plugin was already
+     * there and nothing was wired to install it anyway. A control that cannot
+     * do anything is worse than no control - it makes a person doubt the ones
+     * that do work.
+     *
+     * The list still SHOWS them, because "is git available to my pipeline?" is
+     * a real question with a useful answer. It just answers it instead of
+     * offering to fix it.
+     */
+    builtin?: boolean;
 }
 
 export class PluginManager {
@@ -20,6 +34,16 @@ export class PluginManager {
     private pluginsDir: string;
     private availablePlugins: Plugin[] = [
         // Cloud Provider CLIs
+        {
+            id: 'bicep',
+            name: 'Bicep CLI',
+            description: "Azure's infrastructure-as-code compiler. Needed by any pipeline that deploys a .bicep template.",
+            isInstalled: false,
+            // Through az, which owns the binary and puts it where az will look
+            // for it. A standalone download lands somewhere az does not check,
+            // so `az deployment` still reports bicep as missing.
+            checkCommand: 'az bicep version'
+        },
         {
             id: 'aws-cli',
             name: 'AWS CLI',
@@ -45,6 +69,8 @@ export class PluginManager {
         // Container & Orchestration
         {
             id: 'docker',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'Docker',
             description: 'Platform for developing, shipping, and running applications in containers',
             isInstalled: false,
@@ -75,6 +101,8 @@ export class PluginManager {
         // Development Tools
         {
             id: 'git',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'Git',
             description: 'Distributed version control system',
             isInstalled: false,
@@ -82,6 +110,8 @@ export class PluginManager {
         },
         {
             id: 'node',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'Node.js',
             description: 'JavaScript runtime environment',
             isInstalled: false,
@@ -89,6 +119,8 @@ export class PluginManager {
         },
         {
             id: 'python3',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'Python 3',
             description: 'Python programming language',
             isInstalled: false,
@@ -111,6 +143,8 @@ export class PluginManager {
         },
         {
             id: 'curl',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'curl',
             description: 'Command-line HTTP client for data transfer',
             isInstalled: false,
@@ -118,6 +152,8 @@ export class PluginManager {
         },
         {
             id: 'openssl',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'OpenSSL',
             description: 'Cryptography and SSL/TLS toolkit',
             isInstalled: false,
@@ -125,6 +161,8 @@ export class PluginManager {
         },
         {
             id: 'ssh',
+            // Installed by apps/server/Dockerfile, so this is a presence check.
+            builtin: true,
             name: 'SSH',
             description: 'Secure Shell client for remote access',
             isInstalled: false,
@@ -233,6 +271,14 @@ export class PluginManager {
             'aws-cli': {
                 'darwin': 'python3 -m venv venv && ./venv/bin/pip install awscli', // V1 via pip (No sudo)
                 'linux': 'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -o awscliv2.zip && ./aws/install -i ./install -b ./bin' // Local install
+            },
+            'bicep': {
+                // az owns the binary and knows where to put it. It also needs
+                // libicu, which apps/server/Dockerfile installs - without it
+                // this reports success and every later invocation dies in a
+                // .NET stack trace about globalization.
+                'darwin': 'az bicep install && az bicep version',
+                'linux': 'az bicep install && az bicep version'
             },
             'azure-cli': {
                 'darwin': 'python3 -m venv venv && ./venv/bin/pip install azure-cli',

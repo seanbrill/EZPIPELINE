@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import path from "path";
 import * as fs from "fs";
+import crypto from "crypto";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import Logger from "../controllers/Logger.js";
 import { DatabaseService } from "../services/Database.js";
@@ -1312,13 +1313,77 @@ router.post("/abort", authenticateToken, (req, res) => {
     });
 });
 
+// ── Log stream tickets ──────────────────────────────────────────────────────
+//
+// EventSource CANNOT SET HEADERS. That is a real browser limitation, and the
+// usual workaround - putting the session JWT in the query string - is what was
+// here:
+//
+//     new EventSource(`/api/logs-stream?token=${token}`)
+//
+// A URL is not a private place. It goes into this server's access log, into any
+// proxy in front of it, into browser history, and into the Referer of anything
+// the page then loads. That token is a long-lived admin session, so a single
+// log line hands somebody the whole application.
+//
+// A TICKET fixes it without fighting the browser. The client asks for one over
+// a normal authenticated request - headers work fine there - and gets back a
+// random string that is good for thirty seconds and exactly one connection.
+// The ticket still appears in the URL, and it does not matter: by the time
+// anybody reads that log line it has expired and been spent.
+interface StreamTicket {
+    userId: number | string;
+    expiresAt: number;
+}
+const STREAM_TICKETS = new Map<string, StreamTicket>();
+/** Long enough to survive a slow page, short enough that a logged URL is stale. */
+const TICKET_TTL_MS = 30_000;
+
+function issueStreamTicket(userId: number | string): string {
+    // Swept on issue rather than on a timer: this map is only touched when
+    // somebody opens a stream, so a background interval would be a wakeup
+    // doing nothing on an idle server.
+    const now = Date.now();
+    for (const [k, v] of STREAM_TICKETS) if (v.expiresAt <= now) STREAM_TICKETS.delete(k);
+
+    const ticket = crypto.randomBytes(32).toString("base64url");
+    STREAM_TICKETS.set(ticket, { userId, expiresAt: now + TICKET_TTL_MS });
+    return ticket;
+}
+
+/** Spend a ticket. Deleted on read, so a replay of the same URL gets nothing. */
+function consumeStreamTicket(ticket: string): StreamTicket | null {
+    const found = STREAM_TICKETS.get(ticket);
+    if (!found) return null;
+    STREAM_TICKETS.delete(ticket);
+    return found.expiresAt > Date.now() ? found : null;
+}
+
+router.post("/logs-stream/ticket", authenticateToken, (req, res) => {
+    const user = (req as any).user;
+    res.json({ ticket: issueStreamTicket(user.id), expiresIn: TICKET_TTL_MS / 1000 });
+});
+
 router.get("/logs-stream", (req: Request, res: Response, next: NextFunction) => {
-    // Adapter for SSE Auth: Allow token in query param
-    if (req.query.token && !req.headers.authorization) {
-        req.headers.authorization = `Bearer ${req.query.token}`;
+    // A ticket is the supported way in. The Authorization header still works
+    // for anything that can set one - curl, a test, a future non-EventSource
+    // client - but the SESSION TOKEN is no longer accepted from the query
+    // string, which is the whole point.
+    const ticket = typeof req.query.ticket === "string" ? req.query.ticket : null;
+    if (ticket && !req.headers.authorization) {
+        const claim = consumeStreamTicket(ticket);
+        if (!claim) {
+            res.status(401).json({ error: "Stream ticket is expired or already used" });
+            return;
+        }
+        (req as any).user = { id: claim.userId };
+        (req as any).ticketAuthenticated = true;
     }
     next();
-}, authenticateToken, (req, res) => {
+}, (req: Request, res: Response, next: NextFunction) => {
+    if ((req as any).ticketAuthenticated) return next();
+    return authenticateToken(req, res, next);
+}, (req, res) => {
     const logger = Logger.getInstance();
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
