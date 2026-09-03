@@ -776,8 +776,26 @@ export default class EZPipelineController extends EventEmitter {
           envFilePath = p; // Store the path for ENV_FILE variable
           const envConfig = dotenv.parse(fs.readFileSync(p));
 
-          // Register secrets
-          const secrets = Object.values(envConfig).filter(v => v.length >= 3);
+          // Redact by what a variable IS, not by how long its value happens
+          // to be.
+          //
+          // This registered every value of three characters or more, so a
+          // branch name, a region and a repo URL were all treated as secrets.
+          // That is worse than useless in both directions. It protects
+          // nothing - none of them are secret - and it destroys the logs: a
+          // clone failure came back as "Remote branch [REDACTED] not found",
+          // hiding the one fact needed to fix it, and NOTCHFM_BRANCH=develop
+          // turned the unrelated words "development subscription" into
+          // "[REDACTED]ment subscription", because the match is a plain
+          // substring anywhere in any line.
+          //
+          // A name-based rule covers what actually needs hiding, and the
+          // length floor is raised because a short value cannot carry much
+          // secret and matches far too much prose.
+          const SECRET_KEY = /(SECRET|PASSWORD|PASSWD|TOKEN|_KEY|APIKEY|API_KEY|CREDENTIAL|PRIVATE|SESSION|SALT|CERT|_PAT$|^PAT_)/i;
+          const secrets = Object.entries(envConfig)
+            .filter(([k, v]) => SECRET_KEY.test(k) && v.length >= 8)
+            .map(([, v]) => v);
           this.logger.registerSecrets(secrets);
 
           for (const k in envConfig) {
