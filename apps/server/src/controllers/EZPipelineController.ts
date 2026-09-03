@@ -660,7 +660,26 @@ export default class EZPipelineController extends EventEmitter {
 
     // 1. Prepare Directories
     // We want to Clean the WORKSPACE, but KEEP the BUILDS.
-    if (!options.skipClean && fs.existsSync(workspaceDir)) {
+    //
+    // A RESUME MUST NOT WIPE THE WORKSPACE.
+    //
+    // Approval gates re-enter run() to continue a paused build, and this
+    // cleaned first and then skipped every completed step - including the ones
+    // that had filled the workspace. So the checkout a pipeline made before
+    // the gate was deleted at the gate, and the first step after it failed on
+    // a missing file. Every approval-gated pipeline was broken this way; it
+    // only showed up on one whose post-approval step reads a file, which is to
+    // say on the first one that did anything real.
+    //
+    // A fresh build sets activeStep to steps[0] (see start_build), so index 0
+    // means "starting"; anything later means "continuing". existingBuild alone
+    // cannot tell them apart, because the run route passes a build for both.
+    const resumeIndex = existingBuild?.activeStep
+      ? pipeline.steps.findIndex(s => s.name === existingBuild.activeStep)
+      : 0;
+    const isResume = resumeIndex > 0;
+
+    if (!options.skipClean && !isResume && fs.existsSync(workspaceDir)) {
       try {
         fs.rmSync(workspaceDir, { recursive: true, force: true });
       } catch (e) {
