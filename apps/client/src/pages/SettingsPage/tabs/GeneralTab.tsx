@@ -486,3 +486,11 @@ const MailSettings: React.FC = () => {
         </div>
     );
 };
+
+// The one line whose absence took down the whole application.
+//
+// SettingsPage imports this eagerly, so a missing default export is not a
+// broken TAB - it is a module-resolution failure in the graph the entry point
+// walks, and the browser renders nothing at all. Every sibling tab in this
+// directory has this line; this file never did.
+export default GeneralTab;
