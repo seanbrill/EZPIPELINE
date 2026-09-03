@@ -587,9 +587,9 @@ const DashboardPage: React.FC = () => {
                 <main className="flex-1 flex flex-col overflow-hidden bg-[var(--color-bg)]">
                     {/* Quick Run Bar */}
                     <div className="bg-[var(--color-surface)] border-b border-slate-700/50 p-4 flex-shrink-0 z-10 shadow-sm">
-                        <h2 className="text-lg font-bold text-white whitespace-nowrap mb-7">Quick Run</h2>
-                        <div className="flex gap-4 items-center p-4 bg-slate-900/50 border border-slate-700/50 rounded-lg shadow-sm">
-                            <span className="text-sm font-bold uppercase tracking-wider text-slate-400">Quick Run</span>
+                        <h2 className="text-lg font-bold text-[var(--color-text)] whitespace-nowrap mb-7">Quick Run</h2>
+                        <div className="flex gap-4 items-center p-4 bg-[var(--color-surface)] border border-[var(--color-text-muted)]/25 rounded-lg shadow-sm">
+                            <span className="text-sm font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Quick Run</span>
                             {filteredPipelines.length > 0 ? (
                                 <div className="flex gap-2 flex-1">
                                     <select
@@ -629,7 +629,7 @@ const DashboardPage: React.FC = () => {
                                     </button>
                                 </div>
                             ) : (
-                                <p className="text-slate-500 text-sm">Select a group or create a pipeline</p>
+                                <p className="text-[var(--color-text-muted)] text-sm">Select a group or create a pipeline</p>
                             )}
                         </div>
                     </div>
@@ -642,7 +642,7 @@ const DashboardPage: React.FC = () => {
                                     <Folder className="w-6 h-6 text-emerald-500" />
                                     {selectedGroup ? `${selectedGroup} Pipelines` : 'Pipelines'}
                                 </h2>
-                                <p className="text-slate-500 text-sm mt-1">Recent builds for this group</p>
+                                <p className="text-[var(--color-text-muted)] text-sm mt-1">Recent builds for this group</p>
                             </div>
                             <div className="flex items-center gap-2">
                                 <button
@@ -815,12 +815,12 @@ const DashboardPage: React.FC = () => {
                                 </div>
                             ))
                         ) : (
-                            <div className="flex flex-col items-center justify-center p-16 border border-dashed border-slate-800 rounded-xl text-slate-600 bg-slate-900/20">
-                                <div className="p-4 bg-slate-900 rounded-full mb-4 ring-1 ring-slate-800 shadow-lg">
-                                    <Clock className="w-8 h-8 text-slate-500" />
+                            <div className="flex flex-col items-center justify-center p-16 border border-dashed border-[var(--color-text-muted)]/30 rounded-xl bg-[var(--color-text-muted)]/5">
+                                <div className="p-4 bg-[var(--color-surface)] rounded-full mb-4 ring-1 ring-[var(--color-text-muted)]/20 shadow-lg">
+                                    <Clock className="w-8 h-8 text-[var(--color-text-muted)]" />
                                 </div>
-                                <h3 className="text-lg font-medium text-slate-400 mb-1">No builds history</h3>
-                                <p className="text-sm">Executions will appear here</p>
+                                <h3 className="text-lg font-medium text-[var(--color-text)] mb-1">No builds history</h3>
+                                <p className="text-sm text-[var(--color-text-muted)]">Executions will appear here</p>
                             </div>
                         )}
                     </div>
@@ -835,18 +835,18 @@ const DashboardPage: React.FC = () => {
                             onClick={() => setLogsExpanded(!logsExpanded)}
                         >
                             <div className="px-5 py-3 flex justify-between items-center">
-                                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+                                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
                                     {logsExpanded ? (
                                         <div className="flex gap-4" onClick={(e) => e.stopPropagation()}>
                                             <button
                                                 onClick={() => setLogsTab('logs')}
-                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'logs' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'logs' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-300 hover:text-white'}`}
                                             >
                                                 Logs
                                             </button>
                                             <button
                                                 onClick={() => setLogsTab('terminal')}
-                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'terminal' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+                                                className={`px-3 py-1 rounded transition-colors ${logsTab === 'terminal' ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-300 hover:text-white'}`}
                                             >
                                                 Terminal
                                             </button>

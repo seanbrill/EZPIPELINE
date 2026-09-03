@@ -65,21 +65,26 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   return (
     <div className="h-screen flex flex-col bg-[var(--color-bg)] text-[var(--color-text)] overflow-hidden">
-      <nav className="flex-none border-b border-slate-800 bg-[var(--color-surface)] p-4 flex justify-between items-center z-10">
+      {/* Theme tokens, not fixed colours. Every string in this bar used to be
+          a hardcoded light-on-dark value, so in the LIGHT theme the header
+          rendered near-invisibly: "PIPELINE" measured 1.0:1 against its own
+          background - literally the same colour - and "User:" 1.5:1. Tokens
+          flip with the theme; text-white does not. */}
+      <nav className="flex-none border-b border-[var(--color-text-muted)]/20 bg-[var(--color-surface)] p-4 flex justify-between items-center z-10">
         <div className="flex items-center gap-6">
           <h1 className="text-xl font-bold">
-            <span className="text-emerald-500">EZ</span>
-            <span className="text-white">PIPELINE</span>
+            <span className="text-[var(--color-primary)]">EZ</span>
+            <span className="text-[var(--color-text)]">PIPELINE</span>
           </h1>
-          <div className="flex gap-4 text-sm font-medium text-slate-400">
-            <Link to="/" className="hover:text-white flex items-center gap-2"><LayoutDashboard size={16} /> Dashboard</Link>
-            <Link to="/docs" className="hover:text-white flex items-center gap-2"><Book size={16} /> Docs</Link>
-            <Link to="/settings" className="hover:text-white flex items-center gap-2"><Settings size={16} /> Settings</Link>
+          <div className="flex gap-4 text-sm font-medium text-[var(--color-text-muted)]">
+            <Link to="/" className="hover:text-[var(--color-text)] flex items-center gap-2"><LayoutDashboard size={16} /> Dashboard</Link>
+            <Link to="/docs" className="hover:text-[var(--color-text)] flex items-center gap-2"><Book size={16} /> Docs</Link>
+            <Link to="/settings" className="hover:text-[var(--color-text)] flex items-center gap-2"><Settings size={16} /> Settings</Link>
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span className="text-sm text-slate-500">User: {user}</span>
-          <button onClick={() => setShowLogoutConfirm(true)} className="text-slate-400 hover:text-red-400">
+          <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
+          <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
             <LogOut size={18} />
           </button>
         </div>

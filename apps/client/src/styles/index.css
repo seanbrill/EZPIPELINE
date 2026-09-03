@@ -30,8 +30,10 @@
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-text: #0f172a;
-  --color-text-muted: #64748b;
-  /* Slate 500 - Contrast 4.5:1 on BG */
+  --color-text-muted: #475569;
+  /* Slate 600. Was Slate 500, whose comment claimed 4.5:1 - measured against
+     the actual surface it lands on it is 4.41:1, marginally under what AA
+     wants for small text. This one clears it. */
   --color-primary: #2563eb;
   --color-accent: #059669;
 }
