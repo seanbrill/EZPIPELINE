@@ -22,6 +22,7 @@ import { EmailService } from "../services/EmailService.js";
 import { MailService, PROVIDERS, providerById } from "../services/mail/index.js";
 import { SettingsService } from "../services/SettingsService.js";
 import globalEnvRouter from "./globalEnv.js";
+import groupEnvRouter from "./groupEnv.js";
 import { DATA_DIR, PORT, PUBLIC_DIR, EMAIL_CONFIG, PIPELINES_DIR, AUTH_CONFIG } from "../config/index.js";
 
 // ... (existing imports)
@@ -40,6 +41,7 @@ const globalUpload = multer({ dest: path.join(DATA_DIR, 'global/resources/tmp_up
 
 // Mount global env routes
 router.use("/global-env", authenticateToken, globalEnvRouter);
+router.use("/group-env", authenticateToken, groupEnvRouter);
 
 // ... (existing endpoints)
 

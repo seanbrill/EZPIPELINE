@@ -784,12 +784,29 @@ export default class EZPipelineController extends EventEmitter {
       }
     }
 
+    // The env layers, composed per run and never written back into the
+    // server's own environment. Most specific wins:
+    //   process.env  <  .env.global  <  <group>/.env.group  <  pipeline .env
+    let groupEnv: Record<string, string> = {};
+    let pipelineEnv: Record<string, string> = {};
+
     // Handle Env Vars
     if (pipeline.filePath) {
       const yamlDir = path.dirname(pipeline.filePath);
       const envName = pipeline.id;
 
-      const loadEnv = (p: string) => {
+      // Returns what it read rather than writing it into process.env.
+      //
+      // It USED to do the latter, and that leaked between pipelines: the
+      // server's own environment kept every variable any pipeline had ever
+      // loaded, and each step is spawned with `...process.env`. Run notch.fm's
+      // provisioning and then a FileFreak pipeline, and FileFreak's steps saw
+      // notch.fm's AZURE_CLIENT_SECRET - in one instance, with no warning, and
+      // permanently until the server restarted.
+      //
+      // Layers are composed per run now, so a variable reaches exactly the
+      // pipeline it belongs to.
+      const loadEnv = (p: string): Record<string, string> | null => {
         if (fs.existsSync(p)) {
           buildLogger.info(`Loading env file: ${p}`);
           envFilePath = p; // Store the path for ENV_FILE variable
@@ -817,26 +834,36 @@ export default class EZPipelineController extends EventEmitter {
             .map(([, v]) => v);
           this.logger.registerSecrets(secrets);
 
-          for (const k in envConfig) {
-            process.env[k] = envConfig[k];
-          }
-          return true;
+          return envConfig;
         }
-        return false;
+        return null;
       };
+
+      // GROUP LEVEL, between the instance-wide globals and the pipeline's own.
+      //
+      // Every notch.fm pipeline needs the same Azure subscription and the same
+      // Postgres password; every FileFreak pipeline needs a different set. Put
+      // those in the instance-wide globals and the two projects share
+      // credentials they have no business sharing; put them in each pipeline
+      // and the copies drift, and the one that drifts is always the one you
+      // are not looking at.
+      if (pipeline.group) {
+        const groupEnvPath = path.join(PIPELINES_DIR, pipeline.group, '.env.group');
+        groupEnv = loadEnv(groupEnvPath) ?? {};
+      }
 
       if (isBundle) {
         // Bundle: Check .env then .env.<target>
         // Try strict .env first
-        if (!loadEnv(path.join(yamlDir, '.env'))) {
-          loadEnv(path.join(yamlDir, `.env.${envName}`));
-        }
+        pipelineEnv = loadEnv(path.join(yamlDir, '.env'))
+          ?? loadEnv(path.join(yamlDir, `.env.${envName}`))
+          ?? {};
       } else {
         // Legacy
         const projectRoot = path.dirname(yamlDir);
-        if (!loadEnv(path.join(projectRoot, 'env', `.env.${envName}`))) {
-          loadEnv(path.join(yamlDir, `.env.${envName}`));
-        }
+        pipelineEnv = loadEnv(path.join(projectRoot, 'env', `.env.${envName}`))
+          ?? loadEnv(path.join(yamlDir, `.env.${envName}`))
+          ?? {};
       }
     }
 

@@ -538,6 +538,91 @@ steps:
         this.logger.info(`🗑️ Global env variable deleted: ${key}`);
     }
 
+    // ── Group scoped environment ────────────────────────────────────────────
+    //
+    // Between the instance-wide globals and a pipeline's own file. Every
+    // notch.fm pipeline needs the same Azure subscription; every FileFreak
+    // pipeline needs a different one. Instance-wide means the two projects
+    // share credentials they have no business sharing, and per-pipeline means
+    // copies that drift.
+    //
+    // Unlike the globals, these are NOT loaded into the server's process
+    // environment. The runner reads the file per run and applies it to that
+    // run only - which is the whole point of scoping it.
+
+    private getGroupEnvPath(group: string): string {
+        // The group name comes from a URL, so it is checked rather than
+        // trusted: a `..` here would write an env file anywhere on disk.
+        if (!group || group.includes('/') || group.includes('\\') || group.split(path.sep).some(p => p === '..')) {
+            throw new Error(`Invalid group name: ${group}`);
+        }
+        return path.join(this.rootDir, group, '.env.group');
+    }
+
+    private parseEnvFile(filePath: string): Record<string, string> {
+        if (!fs.existsSync(filePath)) return {};
+        const out: Record<string, string> = {};
+        for (const raw of fs.readFileSync(filePath, 'utf-8').split('\n')) {
+            const line = raw.trim();
+            if (!line || line.startsWith('#')) continue;
+            const body = line.startsWith('export ') ? line.slice(7).trim() : line;
+            const eq = body.indexOf('=');
+            if (eq < 1) continue;
+            const key = body.slice(0, eq).trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+            let value = body.slice(eq + 1).trim();
+            if (value.length >= 2 && ((value[0] === '"' && value.endsWith('"')) || (value[0] === "'" && value.endsWith("'")))) {
+                value = value.slice(1, -1);
+            }
+            out[key] = value;
+        }
+        return out;
+    }
+
+    public getGroupEnvKeys(group: string): string[] {
+        return Object.keys(this.parseEnvFile(this.getGroupEnvPath(group)));
+    }
+
+    public getGroupEnvWithValues(group: string): { key: string; value: string }[] {
+        const vars = this.parseEnvFile(this.getGroupEnvPath(group));
+        return Object.entries(vars).map(([key, value]) => ({ key, value }));
+    }
+
+    public setGroupEnvVariable(group: string, key: string, value: string): void {
+        const filePath = this.getGroupEnvPath(group);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+        const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
+        const lines = existing.split('\n');
+        let found = false;
+        const next = lines.map(line => {
+            const t = line.trim();
+            if (t.startsWith(`${key}=`) || t.startsWith(`export ${key}=`)) {
+                found = true;
+                return `${key}=${value}`;
+            }
+            return line;
+        });
+        if (!found) next.push(`${key}=${value}`);
+
+        fs.writeFileSync(filePath, next.join('\n'), 'utf-8');
+        // Deliberately NOT written into process.env. A group variable belongs
+        // to that group's runs, and putting it in the server's environment is
+        // exactly the leak this scoping exists to prevent.
+        this.logger.info(`📁 Group env variable set: ${group}/${key}`);
+    }
+
+    public deleteGroupEnvVariable(group: string, key: string): void {
+        const filePath = this.getGroupEnvPath(group);
+        if (!fs.existsSync(filePath)) return;
+        const kept = fs.readFileSync(filePath, 'utf-8').split('\n').filter(line => {
+            const t = line.trim();
+            return !t.startsWith(`${key}=`) && !t.startsWith(`export ${key}=`);
+        });
+        fs.writeFileSync(filePath, kept.join('\n'), 'utf-8');
+        this.logger.info(`🗑️ Group env variable deleted: ${group}/${key}`);
+    }
+
     public loadGlobalEnv(): void {
         const globalEnvPath = this.getGlobalEnvPath();
         if (!fs.existsSync(globalEnvPath)) return;
