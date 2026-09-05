@@ -90,6 +90,10 @@ RUN npm ci || { \
 #                    separate package. Without it the azure-cli and aws-cli
 #                    plugin installers fail on their first line with
 #                    "ensurepip is not available" and leave a half made venv.
+#   postgresql-client  psql, so a pipeline can create the database role its
+#                    application connects as. Without it that is a human with
+#                    a terminal, which is the step every deploy guide has and
+#                    nobody remembers.
 #   libicu72         the Bicep CLI is a .NET binary and .NET refuses to start
 #                    without ICU: "Couldn't find a valid ICU package installed
 #                    on the system", printed as a 60 line stack trace after
@@ -105,6 +109,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       unzip \
       python3 \
       python3-venv \
+      postgresql-client \
       libicu72 \
       openssh-client \
       curl \
