@@ -147,6 +147,80 @@ const EnvManager: React.FC<EnvManagerProps> = ({
     const [newValue, setNewValue] = useState('');
     const [showNewValue, setShowNewValue] = useState(false);
 
+    // Bulk paste.
+    //
+    // Adding a dozen variables one field at a time is where a config gets a
+    // typo, and the typo is silent: a pipeline reports a variable missing
+    // while it sits in the list one character wrong. An env file is the format
+    // everybody already has these in, so it is the format this takes.
+    const [bulkOpen, setBulkOpen] = useState(false);
+    const [bulkText, setBulkText] = useState('');
+    const [bulkBusy, setBulkBusy] = useState(false);
+    const [bulkResult, setBulkResult] = useState<string | null>(null);
+
+    /**
+     * Parse KEY=VALUE lines the way a .env file means them.
+     *
+     * Tolerant on purpose, because the input is pasted from a file somebody
+     * else wrote: comments, blank lines, `export ` prefixes and surrounding
+     * quotes all get handled rather than becoming a variable with a strange
+     * name. A value may itself contain `=`, so only the FIRST one splits.
+     */
+    const parseEnvText = (text: string): { key: string; value: string }[] => {
+        const out: { key: string; value: string }[] = [];
+        for (const raw of text.split('\n')) {
+            const line = raw.trim();
+            if (!line || line.startsWith('#')) continue;
+            const body = line.startsWith('export ') ? line.slice(7).trim() : line;
+            const eq = body.indexOf('=');
+            if (eq < 1) continue;
+            const key = body.slice(0, eq).trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+            let value = body.slice(eq + 1).trim();
+            // Strip one matched pair of surrounding quotes, and nothing more:
+            // a value that legitimately contains quotes keeps them.
+            if (value.length >= 2 && ((value[0] === '"' && value.endsWith('"')) || (value[0] === "'" && value.endsWith("'")))) {
+                value = value.slice(1, -1);
+            }
+            out.push({ key, value });
+        }
+        return out;
+    };
+
+    const applyBulk = async () => {
+        if (!onAdd || bulkBusy) return;
+        const pairs = parseEnvText(bulkText);
+        if (pairs.length === 0) {
+            setBulkResult('Nothing that looks like KEY=VALUE in that.');
+            return;
+        }
+        setBulkBusy(true);
+        setBulkResult(null);
+        let ok = 0;
+        const failed: string[] = [];
+        // Sequential, not parallel. Each one is a separate write to the same
+        // file on the server, and firing twelve at once is how two of them
+        // read the file before either has written.
+        for (const { key, value } of pairs) {
+            try {
+                await onAdd(key, value);
+                ok++;
+            } catch {
+                failed.push(key);
+            }
+        }
+        setBulkBusy(false);
+        setBulkResult(
+            failed.length
+                ? `${ok} set, ${failed.length} failed: ${failed.join(', ')}`
+                : `${ok} variable${ok === 1 ? '' : 's'} set.`
+        );
+        if (!failed.length) {
+            setBulkText('');
+            setBulkOpen(false);
+        }
+    };
+
     // Edit State
     const [editingKey, setEditingKey] = useState<string | null>(null);
     const [editKeyInput, setEditKeyInput] = useState('');
@@ -225,6 +299,49 @@ const EnvManager: React.FC<EnvManagerProps> = ({
                             </button>
                         </div>
                     </div>
+
+                    {/* Bulk paste. Adding a dozen variables one field at a
+                        time is where a config gets a typo, and the typo is
+                        silent - a pipeline reports a variable missing while it
+                        sits in the list one character wrong. */}
+                    {onAdd && (
+                        <div className="px-2 mt-3">
+                            <button
+                                onClick={() => { setBulkOpen(!bulkOpen); setBulkResult(null); }}
+                                className="text-xs text-emerald-500 hover:text-emerald-400 font-medium"
+                            >
+                                {bulkOpen ? 'Cancel bulk paste' : 'Paste from an env file'}
+                            </button>
+
+                            {bulkOpen && (
+                                <div className="mt-2">
+                                    <textarea
+                                        value={bulkText}
+                                        onChange={(e) => setBulkText(e.target.value)}
+                                        rows={8}
+                                        spellCheck={false}
+                                        placeholder={'KEY=value\nOTHER_KEY=value\n\n# comments and blank lines are ignored'}
+                                        className="w-full bg-black/40 border border-slate-700 text-slate-200 font-mono text-xs rounded-lg p-3 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600"
+                                    />
+                                    <div className="flex items-center gap-3 mt-2">
+                                        <button
+                                            onClick={applyBulk}
+                                            disabled={bulkBusy || !bulkText.trim()}
+                                            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-bold transition-all active:scale-95"
+                                        >
+                                            {bulkBusy ? 'Setting...' : `Set ${parseEnvText(bulkText).length} variable(s)`}
+                                        </button>
+                                        <span className="text-xs text-slate-500">
+                                            Existing keys are overwritten. Values are not shown back.
+                                        </span>
+                                    </div>
+                                    {bulkResult && (
+                                        <p className="mt-2 text-xs text-slate-300">{bulkResult}</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* List Section */}
