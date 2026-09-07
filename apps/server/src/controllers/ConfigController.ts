@@ -32,7 +32,11 @@ export class ConfigController {
             const items = fs.readdirSync(dir, { withFileTypes: true });
 
             return items
-                .filter(item => item.name !== 'yaml' && item.name !== 'env')
+                // `resources` is a group's file store, not a group. It is
+                // managed from Settings -> Resources and from the dashboard's
+                // Group Config, and showing it here presented config storage
+                // as a browsable folder with a delete button on it.
+                .filter(item => item.name !== 'yaml' && item.name !== 'env' && item.name !== 'resources')
                 .map(item => {
                     const fullPath = path.join(dir, item.name);
                     const relativePath = path.relative(baseDir, fullPath);
