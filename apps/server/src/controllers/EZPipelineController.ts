@@ -163,7 +163,7 @@ export default class EZPipelineController extends EventEmitter {
         status: b.status as any,
         startTime: new Date(b.started_at),
         endTime: b.ended_at ? new Date(b.ended_at) : undefined,
-        triggeredBy: (b as any).triggeredBy || 'manual',
+        triggeredBy: (b as any).triggered_by || 'manual',
         activeStep: activeStepName,
         duration: totalDuration,
         steps: pipeline ? pipeline.steps.map((s, index) => {
@@ -727,7 +727,14 @@ export default class EZPipelineController extends EventEmitter {
     // carries the flag it was started with, and a manual run has no option to
     // set it in the first place.
     if (options.autoApprove) build.autoApprove = true;
-    if (options.triggeredBy) build.triggeredBy = options.triggeredBy;
+    if (options.triggeredBy) {
+      build.triggeredBy = options.triggeredBy;
+      // The row is already inserted by start_build, so the stamp has to be
+      // written through rather than set on the object: the dashboard reads the
+      // builds table, not this in-memory copy. That gap is exactly why the
+      // badge said 'manual' for a run the poller had started.
+      this.buildService.updateBuild(build.id, { triggeredBy: options.triggeredBy } as any);
+    }
 
     // Build specific directory: .../builds/<buildId>
     const buildDir = path.join(buildsDir, build.id);

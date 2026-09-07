@@ -25,6 +25,7 @@ import { migratePendingEmail } from "./migrations/005_pending_email.js";
 import { migrateUserDevices } from "./migrations/006_user_devices.js";
 import { migrateGranularPermissions } from "./migrations/007_granular_permissions.js";
 import { migrateGitWatches } from "./migrations/008_git_watches.js";
+import { migrateBuildTriggeredBy } from "./migrations/009_build_triggered_by.js";
 import { SchedulerService } from "./services/SchedulerService.js";
 import { GitWatchService } from "./services/GitWatchService.js";
 
@@ -78,6 +79,12 @@ try {
     migrateGitWatches();
 } catch (e) {
     Logger.getInstance().warn(`Git watches migration skipped or already applied: ${e}`);
+}
+
+try {
+    migrateBuildTriggeredBy();
+} catch (e) {
+    Logger.getInstance().warn(`Build triggered_by migration skipped or already applied: ${e}`);
 }
 
 // Initialize scheduler

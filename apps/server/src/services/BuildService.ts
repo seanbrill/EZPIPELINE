@@ -15,7 +15,7 @@ export class BuildService {
         return BuildService.instance;
     }
 
-    public createBuild(target: string, version: string): string {
+    public createBuild(target: string, version: string, triggeredBy?: string): string {
         const id = uuidv4();
         const db = this.db.getDb();
 
@@ -23,8 +23,8 @@ export class BuildService {
         const row = db.prepare("SELECT MAX(build_number) as maxNum FROM builds WHERE target = ?").get(target) as { maxNum: number };
         const nextBuildNumber = (row?.maxNum || 0) + 1;
 
-        const stmt = db.prepare("INSERT INTO builds (id, target, status, active_step, percentage, version, started_at, build_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        stmt.run(id, target, 'running', 'Initializing', 0, version, new Date().toISOString(), nextBuildNumber);
+        const stmt = db.prepare("INSERT INTO builds (id, target, status, active_step, percentage, version, started_at, build_number, triggered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        stmt.run(id, target, 'running', 'Initializing', 0, version, new Date().toISOString(), nextBuildNumber, triggeredBy ?? null);
         return id;
     }
 
@@ -34,6 +34,7 @@ export class BuildService {
         const fields: string[] = [];
         const values: any[] = [];
 
+        if ((updates as any).triggeredBy !== undefined) { fields.push("triggered_by = ?"); values.push((updates as any).triggeredBy); }
         if (updates.activeStep !== undefined) { fields.push("active_step = ?"); values.push(updates.activeStep); }
         if (updates.percentage !== undefined) { fields.push("percentage = ?"); values.push(updates.percentage); }
         if (updates.ended !== undefined) { fields.push("ended_at = ?"); values.push(updates.ended.toISOString()); }
