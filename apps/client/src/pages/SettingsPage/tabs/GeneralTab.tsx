@@ -15,7 +15,7 @@ const GeneralTab: React.FC = () => {
     // ... (Keep existing return structure minus Security section)
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="space-y-6">
             {/* Appearance */}
             <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm">
                 <h2 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">

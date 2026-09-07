@@ -27,12 +27,25 @@ const MyAccountTab: React.FC = () => {
     const [showNewPassword, setShowNewPassword] = useState(false);
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+    // Both fetches behind ONE loading flag.
+    //
+    // They used to run in separate ungated effects. The profile landed and the
+    // page painted; a moment later the enforcement flag flipped and inserted
+    // the whole System Security Policy card BETWEEN Profile and Change
+    // Password, shoving the form down about 140px - out from under a pointer
+    // already heading for a password field.
     useEffect(() => {
-        if (token) fetchProfile();
+        if (!token) return;
+        let alive = true;
+        (async () => {
+            setLoading(true);
+            await Promise.allSettled([fetchProfile(), fetchEnforcementStatus()]);
+            if (alive) setLoading(false);
+        })();
+        return () => { alive = false; };
     }, [token]);
 
     const fetchProfile = async () => {
-        setLoading(true);
         try {
             const res = await fetch(`${API_URL}/api/users/me`, {
                 headers: { Authorization: `Bearer ${token}` }
@@ -49,8 +62,6 @@ const MyAccountTab: React.FC = () => {
             }
         } catch (e) {
             console.error(e);
-        } finally {
-            setLoading(false);
         }
     };
 
@@ -82,10 +93,6 @@ const MyAccountTab: React.FC = () => {
 
     // Check enforcement status
     const [isEnforced, setIsEnforced] = useState(false);
-
-    useEffect(() => {
-        fetchEnforcementStatus();
-    }, [token]);
 
     const fetchEnforcementStatus = async () => {
         try {
@@ -184,7 +191,7 @@ const MyAccountTab: React.FC = () => {
     if (loading) return <div className="p-8 text-center text-slate-500 animate-pulse">Loading account details...</div>;
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="space-y-6">
             {/* Profile Section */}
             <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm">
                 <h2 className="text-xl font-semibold mb-6 text-white flex items-center gap-2">

@@ -29,8 +29,8 @@ const ScheduleTab: React.FC<ScheduleTabProps> = ({ pipelineTarget }) => {
     const loadSchedules = async () => {
         try {
             setLoading(true);
-            const res = await fetch(`${API_URL} /api/schedules / ${pipelineTarget} `, {
-                headers: { Authorization: `Bearer ${token} ` }
+            const res = await fetch(`${API_URL}/api/schedules/${pipelineTarget}`, {
+                headers: { Authorization: `Bearer ${token}` }
             });
             const data = await res.json();
             setSchedules(data.schedules || []);
@@ -70,11 +70,11 @@ const ScheduleTab: React.FC<ScheduleTabProps> = ({ pipelineTarget }) => {
         try {
             setCreating(true);
             setError('');
-            const res = await fetch(`${API_URL} /api/schedules`, {
+            const res = await fetch(`${API_URL}/api/schedules`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token} `
+                    Authorization: `Bearer ${token}`
                 },
                 body: JSON.stringify({
                     pipelineTarget,
@@ -106,9 +106,9 @@ const ScheduleTab: React.FC<ScheduleTabProps> = ({ pipelineTarget }) => {
         })) return;
 
         try {
-            await fetch(`${API_URL} /api/schedules / ${id} `, {
+            await fetch(`${API_URL}/api/schedules/${id}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token} ` }
+                headers: { Authorization: `Bearer ${token}` }
             });
             loadSchedules();
         } catch (e) {
@@ -118,7 +118,7 @@ const ScheduleTab: React.FC<ScheduleTabProps> = ({ pipelineTarget }) => {
 
     const toggleSchedule = async (id: number, enabled: boolean) => {
         try {
-            await fetch(`${API_URL} /api/schedules / ${id}/toggle`, {
+            await fetch(`${API_URL}/api/schedules/${id}/toggle`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',

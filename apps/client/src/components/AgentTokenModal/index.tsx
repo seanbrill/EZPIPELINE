@@ -32,8 +32,8 @@ const AgentTokenModal: React.FC<AgentTokenModalProps> = ({ onClose }) => {
     const loadTokens = async () => {
         setLoading(true);
         try {
-            const res = await fetch(`${API_URL} /api/agent - tokens`, {
-                headers: { Authorization: `Bearer ${token} ` }
+            const res = await fetch(`${API_URL}/api/agent-tokens`, {
+                headers: { Authorization: `Bearer ${token}` }
             });
             if (!res.ok) throw new Error("Failed to load tokens");
             const data = await res.json();
@@ -56,11 +56,11 @@ const AgentTokenModal: React.FC<AgentTokenModalProps> = ({ onClose }) => {
         setError(null);
         setCreatedToken(null);
         try {
-            const res = await fetch(`${API_URL} /api/agent - tokens`, {
+            const res = await fetch(`${API_URL}/api/agent-tokens`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token} `
+                    Authorization: `Bearer ${token}`
                 },
                 body: JSON.stringify({ name: newTokenName })
             });
@@ -86,9 +86,9 @@ const AgentTokenModal: React.FC<AgentTokenModalProps> = ({ onClose }) => {
         })) return;
 
         try {
-            await fetch(`${API_URL} /api/agent - tokens / ${id} `, {
+            await fetch(`${API_URL}/api/agent-tokens/${id}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token} ` }
+                headers: { Authorization: `Bearer ${token}` }
             });
             loadTokens();
         } catch (e) {

@@ -57,7 +57,7 @@ const PluginsTab: React.FC = () => {
     };
 
     return (
-        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm animate-in fade-in duration-500">
+        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm">
             <h2 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
                 <Key className="w-5 h-5 text-purple-500" />
                 Plugins & Integrations

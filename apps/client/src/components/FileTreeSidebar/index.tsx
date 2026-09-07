@@ -98,7 +98,6 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
                 if (filterEnv === 'all') {
                     matchesEnv = true;
                 } else if (!nodeEnv) {
-                    console.log(`[FilterDebug] Node: ${node.name}, NodeEnv: UNDEFINED/EMPTY, FilterEnv: '${filterEnv}', Match: false`);
                     matchesEnv = false;
                 } else {
                     // Find the option corresponding to current filterEnv (which is a label)
@@ -107,9 +106,7 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
                         // Check if nodeEnv matches any of the keys for this label (substring match)
                         // e.g. 'Development' contains 'dev', so it matches
                         matchesEnv = option.keys.some(key => nodeEnv.includes(key));
-                        console.log(`[FilterDebug] Node: ${node.name}, NodeEnv: '${nodeEnv}', FilterEnv: '${filterEnv}', Keys: ${JSON.stringify(option.keys)}, Match: ${matchesEnv}`);
                     } else {
-                        console.log(`[FilterDebug] Node: ${node.name}, NodeEnv: '${nodeEnv}', FilterEnv: '${filterEnv}', Option NOT FOUND`);
                         // Fallback?
                         matchesEnv = false;
                     }

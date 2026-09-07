@@ -125,7 +125,7 @@ const SystemTab: React.FC = () => {
     };
 
     return (
-        <div className="space-y-6 animate-in fade-in duration-500">
+        <div className="space-y-6">
             {/* Security Policies */}
             <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700">
                 <h2 className="text-xl font-semibold mb-6 text-emerald-400 flex items-center gap-2">

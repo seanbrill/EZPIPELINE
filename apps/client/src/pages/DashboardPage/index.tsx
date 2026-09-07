@@ -28,7 +28,12 @@ interface Pipeline {
 
 
 
+/** Live log lines kept in memory. Older lines fall off the top. */
+const LOG_BUFFER_MAX = 5000;
+
 export interface BuildHistoryEntry {
+    /** The build's own uuid. Stable; buildNumber is a display position and is not. */
+    id: string;
     buildNumber: number;
     pipelineName: string;
     pipelineId: string;
@@ -82,12 +87,10 @@ const DashboardPage: React.FC = () => {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await response.json();
-            console.log('[DEBUG] Fetched pipelines:', data.targets);
             setPipelines(data.targets || []);
 
             // Extract unique groups
             const uniqueGroups = Array.from(new Set((data.targets || []).map((p: Pipeline) => p.group).filter(Boolean)));
-            console.log('[DEBUG] Unique groups:', uniqueGroups);
             setGroups(['All', ...uniqueGroups as string[]]);
         } catch (error) {
             console.error('Error fetching pipelines:', error);
@@ -197,7 +200,14 @@ const DashboardPage: React.FC = () => {
 
                 // Handle Logs
                 if (payload.message) {
-                    setLogs((prev) => [...prev, payload.message]);
+                    // Bounded. This grew without limit, so a long build ended
+                    // as an unresponsive tab rather than a finished deploy.
+                    setLogs((prev) => {
+                        const next = [...prev, payload.message];
+                        return next.length > LOG_BUFFER_MAX
+                            ? next.slice(next.length - LOG_BUFFER_MAX)
+                            : next;
+                    });
                     return;
                 }
 
@@ -398,7 +408,6 @@ const DashboardPage: React.FC = () => {
             setSelectedGroup("General");
             fetchPipelines();
             fetchGroups();
-            fetchGroups();
         } catch (e) {
             toast.error("Failed to delete group");
         }
@@ -433,7 +442,6 @@ const DashboardPage: React.FC = () => {
                 })
             });
             fetchPipelines();
-            fetchGroups(); // Refresh groups too
             fetchGroups(); // Refresh groups too
         } catch (e) {
             console.error(e);
@@ -555,10 +563,8 @@ const DashboardPage: React.FC = () => {
         const group = p.group || "";
         // Exact match OR child of selected group
         const matches = group === selectedGroup || group.startsWith(selectedGroup + '/');
-        console.log(`[DEBUG] Pipeline "${p.appName}" group="${group}" selectedGroup="${selectedGroup}" matches=${matches}`);
         return matches;
     });
-    console.log('[DEBUG] Filtered pipelines count:', filteredPipelines.length, 'for selectedGroup:', selectedGroup);
 
     const filteredBuildHistory = buildHistory.filter(b => {
         const group = b.group || "General";
@@ -575,10 +581,7 @@ const DashboardPage: React.FC = () => {
                 {/* Sidebar */}
                 <div className={`bg-[var(--color-surface)] border-r border-slate-700 flex flex-col pt-4 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-12' : 'w-64'}`}>
                     {!sidebarCollapsed ? (
-                        <div
-                            className="flex-1 flex flex-col min-h-0"
-                            onClick={() => setSelectedGroup(undefined)}
-                        >
+                        <div className="flex-1 flex flex-col min-h-0">
                             <FileTreeSidebar
                                 fileTree={fileTree}
                                 selectedGroup={selectedGroup || ''}
@@ -703,7 +706,7 @@ const DashboardPage: React.FC = () => {
 
                         {filteredBuildHistory.length > 0 ? (
                             filteredBuildHistory.map((build) => (
-                                <div key={build.buildNumber} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
+                                <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
                                     <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between">
                                         <div className="flex items-center gap-3">
                                             <span className="text-slate-400 font-mono text-sm">#{build.displayNumber || build.buildNumber}</span>

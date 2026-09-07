@@ -135,7 +135,7 @@ const EnvironmentTab: React.FC = () => {
     };
 
     return (
-        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm animate-in fade-in duration-500 h-[calc(100vh-200px)] flex flex-col">
+        <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm h-[calc(100vh-200px)] flex flex-col">
             <h2 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
                 <Key className="w-5 h-5 text-emerald-500" />
                 Environment Variables

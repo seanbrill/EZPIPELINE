@@ -96,3 +96,27 @@ body {
 .custom-scrollbar::-webkit-scrollbar-corner {
   background: transparent;
 }
+/* Focus indication, app-wide.
+ *
+ * There was none. Not a weak one - none: no :focus-visible rule anywhere in
+ * the client, and Tailwind's preflight removes the browser's default outline.
+ * So a keyboard user tabbing through the dashboard had no idea where they
+ * were, which makes every modal, every form and the whole pipeline tree
+ * unusable without a mouse.
+ *
+ * :focus-visible rather than :focus, so a mouse click does not leave a ring
+ * behind on the button it just pressed - the browser decides, and it gets it
+ * right for keyboard, for touch and for a click.
+ *
+ * The offset is what makes it legible on the dark surfaces this app is built
+ * from: an outline drawn flush against a slate-800 button edge reads as part
+ * of the border.
+ */
+:where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--color-primary, #10b981);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Anything that opts into its own ring keeps it: :where() has zero
+ * specificity, so a component rule beats this without !important. */

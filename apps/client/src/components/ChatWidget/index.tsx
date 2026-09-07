@@ -52,11 +52,11 @@ const ChatWidget: React.FC = () => {
         setLoading(true);
 
         try {
-            const res = await fetch(`${API_URL} /api/ai / chat`, {
+            const res = await fetch(`${API_URL}/api/ai/chat`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token} `
+                    Authorization: `Bearer ${token}`
                 },
                 body: JSON.stringify({
                     message: userMsg,
