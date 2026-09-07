@@ -400,7 +400,31 @@ export default class EZPipelineController extends EventEmitter {
     });
 
     // Then interpolate standard ${VAR} patterns
-    result = result.replace(/\$\{(\w+)\}/g, (_, key) => {
+    // A NAME THIS RUNNER DOES NOT KNOW IS LEFT ALONE.
+    //
+    // This used to substitute "" for any ${name} missing from the
+    // environment, which quietly destroyed every SHELL variable written with
+    // braces. A step doing
+    //
+    //   url="postgres://${role}:${pw}@${fqdn}:5432/${db}"
+    //
+    // never reached bash intact: all four are shell locals, none is in the
+    // environment, and the step received
+    //
+    //   url="postgres://:@:5432/"
+    //
+    // It cost a deploy and then hid, because the damage was silent and the
+    // result still looked like a URL. notch.fm wrote that string into Key
+    // Vault as its DATABASE_URL; the guard that refuses to overwrite an
+    // existing secret then preserved it on every later run, and the API died
+    // with ERR_INVALID_URL several steps and one approval gate away from the
+    // step that caused it.
+    //
+    // Handing the name back lets the shell decide, which is the only thing
+    // here that knows whether it is a variable. The ${RESOURCES/...} branch
+    // above already does exactly this.
+    result = result.replace(/\$\{(\w+)\}/g, (match, key) => {
+      if (!(key in env)) return match;
       const value = env[key] ?? "";
       // Quote paths that contain spaces or special shell characters
       // This is especially important for ENV_FILE and similar path variables
