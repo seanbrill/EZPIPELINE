@@ -3,6 +3,8 @@ import { Key } from 'lucide-react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useConfirm } from '../../../contexts/ConfirmationContext';
 import EnvManager from '../../../components/Shared/EnvManager';
+import ScopeTabs, { GLOBAL_SCOPE } from '../../../components/Shared/ScopeTabs';
+import useGroups from '../../../hooks/useGroups';
 
 import API_URL from '../../../config/api';
 
@@ -19,36 +21,19 @@ const EnvironmentTab: React.FC = () => {
     // projects share credentials they have no business sharing, and
     // per-pipeline means copies that drift - and the copy that drifts is
     // always the one nobody is looking at.
-    const [scope, setScope] = useState<string>('__global__');
-    const [groups, setGroups] = useState<string[]>([]);
+    const [scope, setScope] = useState<string>(GLOBAL_SCOPE);
+    const { groups, error: groupsError } = useGroups();
     const [groupEnvVars, setGroupEnvVars] = useState<Array<{ key: string; value: string }>>([]);
 
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
     useEffect(() => {
-        if (token) { fetchGlobalEnvVars(); fetchGroups(); }
+        if (token) fetchGlobalEnvVars();
     }, [token]);
 
     useEffect(() => {
-        if (token && scope !== '__global__') fetchGroupEnvVars(scope);
+        if (token && scope !== GLOBAL_SCOPE) fetchGroupEnvVars(scope);
     }, [token, scope]);
-
-    const fetchGroups = async () => {
-        try {
-            const res = await fetch(`${API_URL}/api/pipelines`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            const data = await res.json();
-            const list: string[] = Array.isArray(data) ? data : (data.pipelines ?? []);
-            const found = new Set<string>();
-            for (const p of list as Array<{ group?: string }>) {
-                if (p.group && p.group !== 'General') found.add(p.group);
-            }
-            setGroups([...found].sort());
-        } catch (e) {
-            console.error("Failed to fetch groups");
-        }
-    };
 
     const fetchGroupEnvVars = async (group: string) => {
         try {
@@ -153,10 +138,10 @@ const EnvironmentTab: React.FC = () => {
         <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-700 shadow-sm backdrop-blur-sm animate-in fade-in duration-500 h-[calc(100vh-200px)] flex flex-col">
             <h2 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
                 <Key className="w-5 h-5 text-emerald-500" />
-                Global Environment Variables
+                Environment Variables
             </h2>
             <p className="text-sm text-slate-400 mb-4 max-w-2xl">
-                {scope === '__global__' ? (
+                {scope === GLOBAL_SCOPE ? (
                     <>Variables available to <strong>every</strong> pipeline in this instance.</>
                 ) : (
                     <>Variables available to every pipeline in <strong>{scope}</strong>, and to no other group.</>
@@ -164,29 +149,14 @@ const EnvironmentTab: React.FC = () => {
                 {' '}More specific always wins: instance, then group, then the pipeline's own file.
             </p>
 
-            {/* Scope. A group's credentials should not be visible to another
-                group's pipelines, and putting them instance-wide is exactly
-                that - so the choice is made here rather than by convention. */}
-            <div className="flex flex-wrap items-center gap-2 mb-6">
-                <button
-                    onClick={() => setScope('__global__')}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${scope === '__global__'
-                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                        : 'text-[var(--color-text-muted)] border border-[var(--color-text-muted)]/25 hover:text-[var(--color-text)]'}`}
-                >
-                    All pipelines
-                </button>
-                {groups.map(g => (
-                    <button
-                        key={g}
-                        onClick={() => setScope(g)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${scope === g
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : 'text-[var(--color-text-muted)] border border-[var(--color-text-muted)]/25 hover:text-[var(--color-text)]'}`}
-                    >
-                        {g}
-                    </button>
-                ))}
+            <div className="mb-6">
+                <ScopeTabs
+                    scope={scope}
+                    groups={groups}
+                    onChange={setScope}
+                    emptyHint="No groups yet. Pipelines filed in a folder get one."
+                />
+                {groupsError && <p className="text-xs text-red-400 mt-2">{groupsError}</p>}
             </div>
 
             {message && (
@@ -199,7 +169,7 @@ const EnvironmentTab: React.FC = () => {
             )}
 
             <div className="flex-1 min-h-0 border border-slate-700 rounded-xl overflow-hidden">
-                {scope !== '__global__' ? (
+                {scope !== GLOBAL_SCOPE ? (
                     <EnvManager
                         variables={groupEnvVars}
                         onAdd={async (key, val) => {

@@ -550,13 +550,16 @@ steps:
     // environment. The runner reads the file per run and applies it to that
     // run only - which is the whole point of scoping it.
 
-    private getGroupEnvPath(group: string): string {
-        // The group name comes from a URL, so it is checked rather than
-        // trusted: a `..` here would write an env file anywhere on disk.
-        // Nested groups are real - FileFreak/Client, Notch.fm/Infra - so a
-        // separator is allowed and traversal is not. Rejecting '/' outright
-        // made every nested group's environment unmanageable from the UI,
-        // which is the majority of them.
+    /**
+     * A group name that cannot leave the pipelines directory.
+     *
+     * The name comes from a URL, so it is checked rather than trusted: a `..`
+     * here would read or write anywhere on disk. Nested groups are real -
+     * FileFreak/Client, Notch.fm/Infra - so a separator is allowed and
+     * traversal is not. Rejecting '/' outright, which this used to do, made
+     * every nested group unmanageable from the UI, and nested is most of them.
+     */
+    private validateGroup(group: string): string {
         const segments = group ? group.split(/[\\/]/).filter(Boolean) : [];
         if (
             !group ||
@@ -566,7 +569,11 @@ steps:
         ) {
             throw new Error(`Invalid group name: ${group}`);
         }
-        return path.join(this.rootDir, group, '.env.group');
+        return segments.join(path.sep);
+    }
+
+    private getGroupEnvPath(group: string): string {
+        return path.join(this.rootDir, this.validateGroup(group), '.env.group');
     }
 
     private parseEnvFile(filePath: string): Record<string, string> {
@@ -693,7 +700,7 @@ steps:
 
     public deleteGlobalResource(fileName: string): void {
         const dir = this.getGlobalResourcesDir();
-        const fullPath = path.join(dir, fileName);
+        const fullPath = path.join(dir, this.safeFileName(fileName));
         if (fs.existsSync(fullPath)) {
             fs.unlinkSync(fullPath);
             this.logger.info(`🗑️ Global resource deleted: ${fileName}`);
@@ -704,11 +711,79 @@ steps:
 
     public saveGlobalResource(tempPath: string, originalName: string): string {
         const dir = this.getGlobalResourcesDir();
-        const targetPath = path.join(dir, originalName);
+        const targetPath = path.join(dir, this.safeFileName(originalName));
 
         // Rename (move)
         fs.renameSync(tempPath, targetPath);
         this.logger.info(`💾 Global resource saved: ${targetPath}`);
         return targetPath;
+    }
+
+    /**
+     * A file name, and nothing that can leave the directory it is joined to.
+     *
+     * Upload names come from the client, so `../../.ssh/authorized_keys` is a
+     * name a browser will happily send. path.basename strips every separator
+     * and the leading-dot check stops `..` itself.
+     */
+    private safeFileName(name: string): string {
+        const base = path.basename(name || '');
+        if (!base || base === '.' || base === '..') {
+            throw new Error(`Invalid file name: ${name}`);
+        }
+        return base;
+    }
+
+    // ── Group-scoped resources ──────────────────────────────────────────────
+    //
+    // The same three operations as the global ones above, one level in. A
+    // deploy key that every notch.fm pipeline needs belongs here rather than
+    // copied into each pipeline, where the copies drift, or instance-wide,
+    // where FileFreak's pipelines can read it.
+    //
+    // Lives at <pipelines>/<group>/resources, beside the group's .env.group.
+    // Pipeline discovery looks for pipeline.yaml, config.ezpipeline.yaml or a
+    // .pipeline marker, and a bare resources directory has none of them, so
+    // this cannot be mistaken for a pipeline.
+
+    private getGroupResourcesDir(group: string): string {
+        const dir = path.join(this.rootDir, this.validateGroup(group), 'resources');
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        return dir;
+    }
+
+    public getGroupResources(group: string): any[] {
+        const dir = this.getGroupResourcesDir(group);
+        return fs.readdirSync(dir, { withFileTypes: true })
+            .filter(item => item.isFile())
+            .map(item => {
+                const stat = fs.statSync(path.join(dir, item.name));
+                return {
+                    name: item.name,
+                    path: `${group}/resources/${item.name}`,
+                    size: stat.size,
+                    updatedAt: stat.mtime
+                };
+            });
+    }
+
+    public saveGroupResource(group: string, tempPath: string, originalName: string): string {
+        const dir = this.getGroupResourcesDir(group);
+        const targetPath = path.join(dir, this.safeFileName(originalName));
+        fs.renameSync(tempPath, targetPath);
+        this.logger.info(`💾 Group resource saved: ${targetPath}`);
+        return targetPath;
+    }
+
+    public deleteGroupResource(group: string, fileName: string): void {
+        const dir = this.getGroupResourcesDir(group);
+        const fullPath = path.join(dir, this.safeFileName(fileName));
+        if (!fs.existsSync(fullPath)) {
+            throw new Error("Resource not found");
+        }
+        fs.unlinkSync(fullPath);
+        this.logger.info(`🗑️ Group resource deleted: ${group}/${fileName}`);
     }
 }

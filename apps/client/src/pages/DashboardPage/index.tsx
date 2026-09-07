@@ -8,9 +8,10 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
+import GroupConfigModal from '../../components/GroupConfigModal';
 
 // ... interfaces ...
 
@@ -56,6 +57,7 @@ const DashboardPage: React.FC = () => {
     const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
     const [selectedGroup, setSelectedGroup] = useState<string | undefined>(undefined);
+    const [configuringGroup, setConfiguringGroup] = useState<string | undefined>(undefined);
     const [selectedPipelineForRun, setSelectedPipelineForRun] = useState<string>('');
     const [logsExpanded, setLogsExpanded] = useState(false);
     const { token } = useAuth();
@@ -678,6 +680,16 @@ const DashboardPage: React.FC = () => {
                                 <p className="text-[var(--color-text-muted)] text-sm mt-1">Recent builds for this group</p>
                             </div>
                             <div className="flex items-center gap-2">
+                                {selectedGroup && (
+                                    <button
+                                        onClick={() => setConfiguringGroup(selectedGroup)}
+                                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                        title={`Environment and resources shared by every pipeline in ${selectedGroup}`}
+                                    >
+                                        <Key className="w-3.5 h-3.5" />
+                                        Group Config
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => clearHistory(selectedGroup || undefined)}
                                     className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
@@ -1029,6 +1041,12 @@ const DashboardPage: React.FC = () => {
             }
 
             {/* ConfirmationModal removed - handled by Global Context */}
+        {configuringGroup && (
+                <GroupConfigModal
+                    group={configuringGroup}
+                    onClose={() => setConfiguringGroup(undefined)}
+                />
+            )}
         </div>
     );
 };

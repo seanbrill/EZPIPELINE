@@ -751,10 +751,33 @@ export default class EZPipelineController extends EventEmitter {
     if (resourceSourceDir) {
       const targetResourceDir = path.join(workspaceDir, 'resources');
 
-      if (fs.existsSync(resourceSourceDir)) {
-        buildLogger.info(`Copying resources from ${resourceSourceDir} to ${targetResourceDir}`);
+      // LAYERED, the same way the env files are: instance, then each group
+      // from the outside in, then the pipeline's own. Copied in that order so
+      // the most specific file wins when two layers name the same one.
+      //
+      // The instance-wide and group directories used to be managed in the UI
+      // and never delivered - `${RESOURCES/deploy_key}` resolved to a file
+      // that was not there, and the step failed on the key rather than on the
+      // upload nobody had noticed doing nothing.
+      const resourceLayers: string[] = [
+        path.join(path.dirname(PIPELINES_DIR), 'global', 'resources'),
+      ];
+      if (pipeline.group) {
+        const parts = pipeline.group.split(path.sep).filter(Boolean);
+        for (let i = 1; i <= parts.length; i++) {
+          resourceLayers.push(path.join(PIPELINES_DIR, ...parts.slice(0, i), 'resources'));
+        }
+      }
+      resourceLayers.push(resourceSourceDir);
+
+      const present = resourceLayers.filter(d => fs.existsSync(d));
+
+      if (present.length > 0) {
         try {
-          fs.cpSync(resourceSourceDir, targetResourceDir, { recursive: true });
+          for (const dir of present) {
+            buildLogger.info(`Copying resources from ${dir} to ${targetResourceDir}`);
+            fs.cpSync(dir, targetResourceDir, { recursive: true, force: true });
+          }
           resourceEnv['RESOURCES'] = targetResourceDir;
 
           // Fix permissions for private keys (id_rsa, *.pem, *.key) to be 600
@@ -778,7 +801,8 @@ export default class EZPipelineController extends EventEmitter {
           buildLogger.error("Failed to copy resources", e);
         }
       } else {
-        // Create empty resources dir
+        // Nothing at any layer. The directory still exists so a step can write
+        // into $RESOURCES without checking first.
         fs.mkdirSync(targetResourceDir, { recursive: true });
         resourceEnv['RESOURCES'] = targetResourceDir;
       }

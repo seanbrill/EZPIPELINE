@@ -278,7 +278,7 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                 {globalResources.map(r => (
                                     <button
                                         key={r}
-                                        onClick={() => handleInsertVariable(`GLOBAL_RESOURCES/${r}`)}
+                                        onClick={() => handleInsertVariable(`RESOURCES/${r}`)}
                                         className="text-left px-3 py-2 bg-slate-900/50 hover:bg-indigo-900/20 border border-slate-800 hover:border-indigo-500/50 rounded-lg text-sm text-indigo-300 font-mono transition-all truncate"
                                         title={r}
                                     >

@@ -37,7 +37,10 @@ import { SystemController } from "../controllers/SystemController.js";
 const systemController = SystemController.getInstance(); // Initialize
 // Resolved once, and it refuses a placeholder outside development.
 import { JWT_SECRET as SECRET } from "../config/secret.js";
-const globalUpload = multer({ dest: path.join(DATA_DIR, 'global/resources/tmp_uploads') });
+// NOT inside global/resources. Global resources are copied into every
+// pipeline's workspace, and a staging directory living inside them meant every
+// half-finished upload was copied along with them.
+const globalUpload = multer({ dest: path.join(DATA_DIR, 'tmp_uploads') });
 
 // Mount global env routes
 router.use("/global-env", authenticateToken, globalEnvRouter);
@@ -1257,6 +1260,56 @@ router.delete("/builds/history", authenticateToken, (req, res) => {
         res.json({ message: group ? `Build history for group '${group}' cleared` : "All build history cleared" });
     } catch (e: any) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ── Group-scoped resources ──────────────────────────────────────────────────
+//
+// A deploy key every notch.fm pipeline needs belongs here rather than copied
+// into each pipeline, where the copies drift, or instance-wide, where
+// FileFreak's pipelines can read it.
+//
+// The group is a PATH - FileFreak/Client, Notch.fm/Infra - and reaches these
+// routes percent-encoded, the same way /api/group-env takes it. Express
+// matches the raw path, so %2F stays out of the way of the router and
+// req.params.group comes back decoded.
+
+router.get("/config/group-resources/:group", authenticateToken, (req, res) => {
+    try {
+        res.json({ files: configController.getGroupResources(req.params.group) });
+    } catch (e: any) {
+        res.status(400).json({ error: e.message });
+    }
+});
+
+router.post("/config/group-resources/:group/upload", authenticateToken, globalUpload.single('file'), (req, res) => {
+    if (!req.file) {
+        res.status(400).json({ error: "No file uploaded" });
+        return;
+    }
+    try {
+        configController.saveGroupResource(req.params.group, req.file.path, req.file.originalname);
+        res.json({ message: "File uploaded successfully", name: req.file.originalname });
+    } catch (e: any) {
+        // multer already wrote the temp file, and a rejected name or group
+        // means nothing moved it. Left alone it accumulates in tmp_uploads.
+        try { fs.unlinkSync(req.file.path); } catch { /* already gone */ }
+        Logger.getInstance().error("Failed to save group resource", e);
+        res.status(400).json({ error: e.message });
+    }
+});
+
+router.delete("/config/group-resources/:group/:name", authenticateToken, (req, res) => {
+    const user = (req as any).user;
+    if (!permissionsService.isAdmin(user.id)) {
+        res.status(403).json({ error: "Only admins can delete group resources" });
+        return;
+    }
+    try {
+        configController.deleteGroupResource(req.params.group, req.params.name);
+        res.json({ message: "Resource deleted" });
+    } catch (e: any) {
+        res.status(400).json({ error: e.message });
     }
 });
 
