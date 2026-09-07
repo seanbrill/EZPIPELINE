@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Key, File as FileIcon, FolderTree } from 'lucide-react';
+import { X, Key, File as FileIcon, FolderTree, GitBranch } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmationContext';
 import { useToast } from '../contexts/ToastContext';
 import EnvManager from './Shared/EnvManager';
 import ResourceManager from './Shared/ResourceManager';
+import GitWatchManager from './Shared/GitWatchManager';
 import API_URL from '../config/api';
 
 interface Props {
@@ -24,7 +25,7 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
     const { token } = useAuth();
     const { confirm } = useConfirm();
     const toast = useToast();
-    const [tab, setTab] = useState<'env' | 'resources'>('env');
+    const [tab, setTab] = useState<'env' | 'resources' | 'autodeploy'>('env');
     const [vars, setVars] = useState<Array<{ key: string; value: string }>>([]);
     const g = encodeURIComponent(group);
 
@@ -58,7 +59,7 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
         await fetchVars();
     };
 
-    const tabBtn = (id: 'env' | 'resources', label: string, Icon: typeof Key) => (
+    const tabBtn = (id: 'env' | 'resources' | 'autodeploy', label: string, Icon: typeof Key) => (
         <button
             onClick={() => setTab(id)}
             className={`px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border ${
@@ -94,10 +95,13 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
                 <div className="flex items-center gap-2 px-5 pt-4">
                     {tabBtn('env', 'Environment', Key)}
                     {tabBtn('resources', 'Resources', FileIcon)}
+                    {tabBtn('autodeploy', 'Auto deploy', GitBranch)}
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto p-5 custom-scrollbar">
-                    {tab === 'env' ? (
+                    {tab === 'autodeploy' ? (
+                        <GitWatchManager group={group} />
+                    ) : tab === 'env' ? (
                         <div className="border border-slate-700 rounded-xl overflow-hidden h-[50vh]">
                             <EnvManager
                                 variables={vars}
