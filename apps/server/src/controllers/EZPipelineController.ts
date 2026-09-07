@@ -633,7 +633,7 @@ export default class EZPipelineController extends EventEmitter {
     //check for templates in the k8s folder and replace any ${ENV_VARS} with the value
   }
 
-  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean } = {}) {
+  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean, autoApprove?: boolean } = {}) {
     let pipeline = this.targets.find(t => t.id === pipelineId);
 
     if (options.customYaml) {
@@ -721,6 +721,12 @@ export default class EZPipelineController extends EventEmitter {
 
     // 2. Track Build
     let build = existingBuild || this.start_build(pipeline);
+
+    // Stamped once, on the build, so it survives approveBuild's resume - which
+    // calls run() again with no options. Never cleared here: a resumed build
+    // carries the flag it was started with, and a manual run has no option to
+    // set it in the first place.
+    if (options.autoApprove) build.autoApprove = true;
 
     // Build specific directory: .../builds/<buildId>
     const buildDir = path.join(buildsDir, build.id);
@@ -1060,6 +1066,28 @@ export default class EZPipelineController extends EventEmitter {
           }
           fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
           this.emit("build_paused", build);
+
+          // AUTO-APPROVAL RESUMES THROUGH THE NORMAL PATH, ON PURPOSE.
+          //
+          // It would be shorter to skip the pause and fall through, and that
+          // would mean a second implementation of "mark the gate passed and
+          // carry on" living next to approveBuild and drifting from it. So the
+          // build pauses exactly as it always did and is then resumed by the
+          // same call a human's click makes. The gate is still recorded as a
+          // gate; what changed is who opened it.
+          //
+          // Only ever set by a git watch whose auto-approve is on. A manual run
+          // of the same pipeline still waits.
+          if (build.autoApprove) {
+            buildLogger.warn(
+              `⏭️ Auto-approving '${currentStep.name}': this run was triggered by a git watch with auto-approve enabled.`
+            );
+            setImmediate(() => {
+              void this.approveBuild(build.id).catch((e) =>
+                buildLogger.error(`Auto-approval failed: ${e}`)
+              );
+            });
+          }
           return; // Pause execution, controller will resume via approveBuild
         }
 

@@ -6,6 +6,7 @@ import crypto from "crypto";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import Logger from "../controllers/Logger.js";
 import { DatabaseService } from "../services/Database.js";
+import { GitWatchService } from "../services/GitWatchService.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
@@ -159,6 +160,109 @@ router.get("/builds/:id/logs", authenticateToken, (req, res) => {
 });
 
 // Schedule Routes
+// ── Git watches: run a pipeline when a branch moves ─────────────────────────
+//
+// Polling, not webhooks: this server usually has no inbound route from the
+// internet, so the forge cannot call us. See migrations/008_git_watches.ts.
+
+router.get("/git-watches", authenticateToken, (req, res) => {
+    try {
+        const db = DatabaseService.getInstance().getDb();
+        const watches = db.prepare(`SELECT * FROM git_watches ORDER BY id DESC`).all();
+        res.json({ watches });
+    } catch (e) {
+        Logger.getInstance().error(`Failed to list git watches: ${e}`);
+        res.status(500).json({ error: "Failed to list git watches" });
+    }
+});
+
+/** Check a repo/branch is reachable BEFORE saving a watch that never fires. */
+router.post("/git-watches/probe", authenticateToken, async (req, res) => {
+    const { repoUrl, branch } = req.body ?? {};
+    if (!repoUrl || !branch) {
+        res.status(400).json({ error: "repoUrl and branch are required" });
+        return;
+    }
+    const result = await GitWatchService.getInstance().probe(String(repoUrl), String(branch));
+    res.json(result);
+});
+
+router.post("/git-watches", authenticateToken, (req, res) => {
+    const user = (req as any).user;
+    const { pipelineTarget, groupPath, repoUrl, branch, pollSeconds, autoApprove } = req.body ?? {};
+
+    if (!pipelineTarget || !repoUrl) {
+        res.status(400).json({ error: "pipelineTarget and repoUrl are required" });
+        return;
+    }
+    // The floor is not politeness to the forge, it is this server: every watch
+    // holds the tick while its ls-remote runs, so a 1-second poll would spend
+    // the loop on one repository.
+    const poll = Math.max(15, Number(pollSeconds) || 60);
+
+    try {
+        const db = DatabaseService.getInstance().getDb();
+        const info = db.prepare(`
+            INSERT INTO git_watches
+                (pipeline_target, group_path, repo_url, branch, poll_seconds, auto_approve, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            String(pipelineTarget),
+            groupPath ? String(groupPath) : null,
+            String(repoUrl),
+            String(branch || "main"),
+            poll,
+            autoApprove ? 1 : 0,
+            user?.id ?? null
+        );
+        Logger.getInstance().info(
+            `Git watch ${info.lastInsertRowid} created for ${pipelineTarget} (${repoUrl}#${branch || "main"})` +
+            (autoApprove ? " with AUTO-APPROVE enabled" : "")
+        );
+        res.json({ id: info.lastInsertRowid });
+    } catch (e) {
+        Logger.getInstance().error(`Failed to create git watch: ${e}`);
+        res.status(500).json({ error: "Failed to create git watch" });
+    }
+});
+
+router.patch("/git-watches/:id", authenticateToken, (req, res) => {
+    const { enabled, autoApprove, pollSeconds, branch } = req.body ?? {};
+    try {
+        const db = DatabaseService.getInstance().getDb();
+        const sets: string[] = [];
+        const vals: any[] = [];
+        if (enabled !== undefined) { sets.push("enabled = ?"); vals.push(enabled ? 1 : 0); }
+        if (autoApprove !== undefined) { sets.push("auto_approve = ?"); vals.push(autoApprove ? 1 : 0); }
+        if (pollSeconds !== undefined) { sets.push("poll_seconds = ?"); vals.push(Math.max(15, Number(pollSeconds) || 60)); }
+        if (branch !== undefined) {
+            // Changing the branch invalidates the remembered sha: the new
+            // branch's head is a different question, and comparing against the
+            // old one would fire a deploy for a commit that is not new.
+            sets.push("branch = ?"); vals.push(String(branch));
+            sets.push("last_sha = NULL");
+        }
+        if (!sets.length) { res.status(400).json({ error: "nothing to update" }); return; }
+        vals.push(req.params.id);
+        db.prepare(`UPDATE git_watches SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+        res.json({ ok: true });
+    } catch (e) {
+        Logger.getInstance().error(`Failed to update git watch: ${e}`);
+        res.status(500).json({ error: "Failed to update git watch" });
+    }
+});
+
+router.delete("/git-watches/:id", authenticateToken, (req, res) => {
+    try {
+        const db = DatabaseService.getInstance().getDb();
+        db.prepare(`DELETE FROM git_watches WHERE id = ?`).run(req.params.id);
+        res.json({ ok: true });
+    } catch (e) {
+        Logger.getInstance().error(`Failed to delete git watch: ${e}`);
+        res.status(500).json({ error: "Failed to delete git watch" });
+    }
+});
+
 router.get("/schedules/:target", authenticateToken, (req, res) => {
     const { target } = req.params;
     const s = scheduler.getSchedulesForPipeline(target);

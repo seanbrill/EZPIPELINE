@@ -24,7 +24,9 @@ import { migrateTerminalPermission } from "./migrations/004_terminal_permission.
 import { migratePendingEmail } from "./migrations/005_pending_email.js";
 import { migrateUserDevices } from "./migrations/006_user_devices.js";
 import { migrateGranularPermissions } from "./migrations/007_granular_permissions.js";
+import { migrateGitWatches } from "./migrations/008_git_watches.js";
 import { SchedulerService } from "./services/SchedulerService.js";
+import { GitWatchService } from "./services/GitWatchService.js";
 
 // Initialize database
 const dbService = DatabaseService.getInstance();
@@ -72,9 +74,18 @@ try {
     Logger.getInstance().warn(`Granular permissions migration skipped or already applied: ${e}`);
 }
 
+try {
+    migrateGitWatches();
+} catch (e) {
+    Logger.getInstance().warn(`Git watches migration skipped or already applied: ${e}`);
+}
+
 // Initialize scheduler
 const scheduler = SchedulerService.getInstance();
 scheduler.loadSchedules();
+
+// Poll watched branches and run their pipelines when the head moves.
+GitWatchService.getInstance().start();
 
 // API Routes
 app.use("/api/agent", agentRoutes);
