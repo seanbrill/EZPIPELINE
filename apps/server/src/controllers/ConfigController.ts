@@ -553,7 +553,17 @@ steps:
     private getGroupEnvPath(group: string): string {
         // The group name comes from a URL, so it is checked rather than
         // trusted: a `..` here would write an env file anywhere on disk.
-        if (!group || group.includes('/') || group.includes('\\') || group.split(path.sep).some(p => p === '..')) {
+        // Nested groups are real - FileFreak/Client, Notch.fm/Infra - so a
+        // separator is allowed and traversal is not. Rejecting '/' outright
+        // made every nested group's environment unmanageable from the UI,
+        // which is the majority of them.
+        const segments = group ? group.split(/[\\/]/).filter(Boolean) : [];
+        if (
+            !group ||
+            path.isAbsolute(group) ||
+            segments.length === 0 ||
+            segments.some(seg => seg === '..' || seg === '.')
+        ) {
             throw new Error(`Invalid group name: ${group}`);
         }
         return path.join(this.rootDir, group, '.env.group');

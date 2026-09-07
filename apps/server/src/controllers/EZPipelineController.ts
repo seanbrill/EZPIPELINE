@@ -787,6 +787,7 @@ export default class EZPipelineController extends EventEmitter {
     // The env layers, composed per run and never written back into the
     // server's own environment. Most specific wins:
     //   process.env  <  .env.global  <  <group>/.env.group  <  pipeline .env
+    let globalEnv: Record<string, string> = {};
     let groupEnv: Record<string, string> = {};
     let pipelineEnv: Record<string, string> = {};
 
@@ -847,9 +848,26 @@ export default class EZPipelineController extends EventEmitter {
       // credentials they have no business sharing; put them in each pipeline
       // and the copies drift, and the one that drifts is always the one you
       // are not looking at.
+      // INSTANCE-WIDE, the outermost layer and the one every pipeline sees.
+      globalEnv = loadEnv(path.join(path.dirname(PIPELINES_DIR), '.env.global')) ?? {};
+
+      // Walked from the OUTERMOST group inward, because groups nest and the
+      // useful meaning of "a variable for all of Notch.fm" includes the
+      // pipelines filed under Notch.fm/Infra.
+      //
+      // `group` is the pipeline's parent directory relative to the pipelines
+      // root, so provision-dev's group is `Notch.fm/Infra`, not `Notch.fm`.
+      // Reading only that one directory meant a variable set for all of
+      // notch.fm reached deploy-dev and not provisioning, for no reason a
+      // person could see from the UI.
+      //
+      // Inner wins, so a group can override what its parent set.
       if (pipeline.group) {
-        const groupEnvPath = path.join(PIPELINES_DIR, pipeline.group, '.env.group');
-        groupEnv = loadEnv(groupEnvPath) ?? {};
+        const parts = pipeline.group.split(path.sep).filter(Boolean);
+        for (let i = 1; i <= parts.length; i++) {
+          const dir = path.join(PIPELINES_DIR, ...parts.slice(0, i));
+          Object.assign(groupEnv, loadEnv(path.join(dir, '.env.group')) ?? {});
+        }
       }
 
       if (isBundle) {
@@ -955,6 +973,17 @@ export default class EZPipelineController extends EventEmitter {
         const envVars = {
           ...process.env,
           PATH: newPath, // Override PATH
+          // The layers loaded above, most specific last.
+          //
+          // These were composed and then not applied: the refactor that
+          // stopped loadEnv writing into process.env removed the only path by
+          // which they reached a step, and nothing replaced it. Every pipeline
+          // ran with no configuration at all, which reads as "MISSING:
+          // AZURE_TENANT_ID" and looks like an unset variable rather than a
+          // variable that was read from disk and dropped on the floor.
+          ...globalEnv,
+          ...groupEnv,
+          ...pipelineEnv,
           ...resourceEnv, // Inject RESOURCES
           ...currentStep.env,
           // Inject Standard Pipeline Variables
