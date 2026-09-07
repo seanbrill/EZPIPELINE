@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { GitBranch, Trash2, Plus, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { GitBranch, Trash2, Plus, AlertTriangle, CheckCircle2, XCircle, FolderTree } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -22,6 +22,19 @@ interface Watch {
 }
 
 interface Target { id: string; appName: string; group?: string }
+
+/**
+ * Is `path` at or beneath `scope`?
+ *
+ * An empty scope is the root and contains everything. The trailing slash
+ * matters: 'Notch.fm' must not swallow 'Notch.fmOther'.
+ */
+const inScope = (path: string, scope: string) =>
+    scope === '' || path === scope || path.startsWith(scope + '/');
+
+/** The part of a watch's path below the group being viewed, or '' if it is here. */
+const relativePath = (path: string, scope: string) =>
+    scope === '' ? path : path === scope ? '' : path.slice(scope.length + 1);
 
 /**
  * Watches on a group: run a pipeline when a branch moves.
@@ -57,11 +70,19 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
             const w = await wRes.json();
             const t = await tRes.json();
             const all: Watch[] = w.watches ?? [];
-            // Watches created before group_path existed, or from another group,
-            // are not this group's business.
-            setWatches(all.filter(x => (x.group_path ?? '') === group));
+            // A GROUP CONTAINS ITS FOLDERS, so it shows their watches too.
+            //
+            // Exact-match was wrong in the direction that hides things: a watch
+            // on Notch.fm/Dev was invisible from Notch.fm, so the parent looked
+            // like it had no automation while deploying on every push. Scoping
+            // should narrow what you see as you go DOWN, not make the top level
+            // the emptiest place in the tree.
+            //
+            // The prefix needs the slash. Without it 'Notch.fm' would also
+            // match 'Notch.fmOther', which is a different group entirely.
+            setWatches(all.filter(x => inScope(x.group_path ?? '', group)));
             const list: Target[] = Array.isArray(t) ? t : (t.targets ?? []);
-            setTargets(list.filter(x => (x.group ?? '') === group));
+            setTargets(list.filter(x => inScope(x.group ?? '', group)));
         } catch {
             toast.error('Could not load auto-deploy settings');
         }
@@ -113,9 +134,15 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
                 return;
             }
 
+            // The watch belongs where the PIPELINE lives, not where you happened
+            // to be standing when you created it. Saving the viewing group would
+            // file a Notch.fm/Dev pipeline's watch under Notch.fm, where it would
+            // then vanish the moment somebody opened Dev to look for it.
+            const groupPath = targets.find(t => t.id === pipelineTarget)?.group ?? group;
+
             const res = await fetch(`${API_URL}/api/git-watches`, {
                 method: 'POST', headers,
-                body: JSON.stringify({ pipelineTarget, groupPath: group, repoUrl, branch, pollSeconds, autoApprove }),
+                body: JSON.stringify({ pipelineTarget, groupPath, repoUrl, branch, pollSeconds, autoApprove }),
             });
             if (!res.ok) throw new Error((await res.json()).error ?? 'failed');
             toast.success(`Watching ${branch}. The current commit is adopted without deploying; the next push runs it.`);
@@ -169,7 +196,7 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
             {watches.length === 0 && !adding && (
                 <div className="rounded-xl border border-dashed border-slate-700 p-6 text-center">
                     <GitBranch className="mx-auto mb-2 h-6 w-6 text-slate-500" />
-                    <p className="text-sm text-slate-400">No branches watched in this group.</p>
+                    <p className="text-sm text-slate-400">No branches watched in this group or below it.</p>
                 </div>
             )}
 
@@ -186,6 +213,15 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
                                 {!!w.auto_approve && (
                                     <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300 ring-1 ring-amber-400/30">
                                         skips gates
+                                    </span>
+                                )}
+                                {/* Only for watches that live further down. Labelling
+                                    the ones belonging to THIS group would be noise on
+                                    every row of a leaf group. */}
+                                {relativePath(w.group_path ?? '', group) && (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-700/60 px-2 py-0.5 text-xs text-slate-300">
+                                        <FolderTree className="h-3 w-3" />
+                                        {relativePath(w.group_path ?? '', group)}
                                     </span>
                                 )}
                             </div>
