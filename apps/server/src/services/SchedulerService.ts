@@ -103,6 +103,14 @@ export class SchedulerService {
 
             // Trigger pipeline build
             const controller = EZPipelineController.instance;
+            // Same reason as POST /run-pipeline: `targets` is read at boot and
+            // a pipeline.yaml edited any other way leaves this process running
+            // the version it started with. A scheduled run is the one nobody
+            // is watching, so it is the worst place to execute a stale
+            // definition. Not done on the approval-resume path, which
+            // re-enters run() mid-build and must keep the definition it began
+            // with.
+            controller.refreshTargets();
             controller.run(schedule.pipeline_target);
 
             this.logger.info(`Scheduled pipeline ${schedule.pipeline_target} started successfully`);

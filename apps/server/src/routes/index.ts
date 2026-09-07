@@ -805,6 +805,24 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
         return;
     }
 
+    // RE-READ THE DEFINITIONS FROM DISK BEFORE RUNNING ONE.
+    //
+    // `targets` is built once at boot and refreshed only by the handful of
+    // routes that write pipeline files. Edit a pipeline.yaml any other way -
+    // by hand, by a deploy script, by copying one in - and the file on disk is
+    // correct while this process keeps executing the version it read at
+    // startup. Nothing anywhere says so.
+    //
+    // It cost a full deploy: the pipeline had been changed to build its images
+    // in ACR, the file on disk said so, and the run built them locally anyway
+    // for the wrong architecture. The pipeline's own drift check passed,
+    // because it compares the file against the repository - and the file was
+    // right. The stale copy was in here.
+    //
+    // A directory scan per run is nothing next to a build, and it makes the
+    // definition on disk the definition that runs.
+    EZPipelineController.instance.refreshTargets();
+
     const p = EZPipelineController.instance.targets.find(t => t.id === target || t.appName === target);
     const hasAccess = permissionsService.checkAccess(user.id, target, 'write') ||
         (p && permissionsService.checkAccess(user.id, p.id, 'write')) ||
