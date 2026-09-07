@@ -794,6 +794,30 @@ const DashboardPage: React.FC = () => {
                                         <div className="flex items-center gap-3">
                                             <span className="text-slate-400 font-mono text-sm">#{build.displayNumber || build.buildNumber}</span>
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
+                                            {/* Who started it. A push-triggered run is the one nobody
+                                                was watching, so it is worth telling apart from a run
+                                                somebody chose to start and is sitting in front of. */}
+                                            {build.triggeredBy && (
+                                                <span
+                                                    className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                                                        build.triggeredBy.startsWith('git watch')
+                                                            ? 'bg-violet-500/15 text-violet-300 ring-1 ring-violet-400/30'
+                                                            : 'bg-slate-700/60 text-slate-300'
+                                                    }`}
+                                                    title={
+                                                        build.triggeredBy.startsWith('git watch')
+                                                            ? `Started automatically: ${build.triggeredBy}`
+                                                            : `Started by ${build.triggeredBy}`
+                                                    }
+                                                >
+                                                    {build.triggeredBy.startsWith('git watch') ? '⟳ auto' : '⏵'}
+                                                    <span className="font-mono">
+                                                        {build.triggeredBy.startsWith('git watch')
+                                                            ? build.triggeredBy.replace('git watch ', '')
+                                                            : build.triggeredBy}
+                                                    </span>
+                                                </span>
+                                            )}
                                             <span className={`flex items-center gap-1.5 text-sm ${build.status === 'success' ? 'text-emerald-400' :
                                                 build.status === 'running' ? 'text-blue-400' :
                                                 build.status === 'paused' ? 'text-amber-300' :

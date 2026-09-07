@@ -971,7 +971,11 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
     // create` calls against one resource group were next.
     //
     // pipeline.id rather than the request's `target`, which may be an appName.
-    EZPipelineController.instance.run(pipelineTarget, build).catch(e => {
+    EZPipelineController.instance.run(pipelineTarget, build, {
+      // The person, not the word "manual". Every row said manual before,
+      // including the ones nobody started.
+      triggeredBy: user?.username ? String(user.username) : 'manual',
+    }).catch(e => {
         Logger.getInstance().error(`Pipeline run failed for ${pipelineTarget}`, e);
     });
 

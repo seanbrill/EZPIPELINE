@@ -185,6 +185,9 @@ export class GitWatchService {
             controller.refreshTargets();
             controller.run(w.pipeline_target, undefined, {
                 autoApprove: w.auto_approve === 1,
+                // The commit, not just "automatic": the first question about a
+                // deploy nobody started is which push caused it.
+                triggeredBy: `git watch ${w.branch}@${sha.slice(0, 7)}`,
             });
         } catch (e) {
             const msg = String(e).slice(0, 500);

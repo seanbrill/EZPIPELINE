@@ -163,7 +163,7 @@ export default class EZPipelineController extends EventEmitter {
         status: b.status as any,
         startTime: new Date(b.started_at),
         endTime: b.ended_at ? new Date(b.ended_at) : undefined,
-        triggeredBy: 'manual',
+        triggeredBy: (b as any).triggeredBy || 'manual',
         activeStep: activeStepName,
         duration: totalDuration,
         steps: pipeline ? pipeline.steps.map((s, index) => {
@@ -633,7 +633,7 @@ export default class EZPipelineController extends EventEmitter {
     //check for templates in the k8s folder and replace any ${ENV_VARS} with the value
   }
 
-  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean, autoApprove?: boolean } = {}) {
+  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean, autoApprove?: boolean, triggeredBy?: string } = {}) {
     let pipeline = this.targets.find(t => t.id === pipelineId);
 
     if (options.customYaml) {
@@ -727,6 +727,7 @@ export default class EZPipelineController extends EventEmitter {
     // carries the flag it was started with, and a manual run has no option to
     // set it in the first place.
     if (options.autoApprove) build.autoApprove = true;
+    if (options.triggeredBy) build.triggeredBy = options.triggeredBy;
 
     // Build specific directory: .../builds/<buildId>
     const buildDir = path.join(buildsDir, build.id);

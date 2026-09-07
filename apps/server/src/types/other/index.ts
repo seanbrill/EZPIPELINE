@@ -23,4 +23,17 @@ export interface Build {
    * Set only by a git watch with auto-approve enabled.
    */
   autoApprove?: boolean;
+  /**
+   * Who started this run, for the dashboard.
+   *
+   * "a build failed" and "a build nobody was watching failed" are different
+   * situations, and the history list looked identical either way: BuildHistory
+   * already had a triggeredBy field and it was hardcoded to the literal
+   * 'manual' for every row, including scheduled ones. So it always agreed with
+   * itself and never with reality.
+   *
+   * A push trigger carries the commit ("git watch main@640470c"), because the
+   * first question about an automatic deploy is which commit caused it.
+   */
+  triggeredBy?: string;
 }
