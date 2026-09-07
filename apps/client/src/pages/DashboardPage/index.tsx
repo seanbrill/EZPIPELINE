@@ -8,7 +8,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -565,19 +565,34 @@ const DashboardPage: React.FC = () => {
 
     const groupsList = Array.from(allGroups).sort();
     // Show pipelines from selected group AND all child groups
-    const filteredPipelines = pipelines.filter(p => {
-        if (selectedGroup === undefined) return !p.group || p.group === 'General'; // Show root pipelines if no group selected
-        const group = p.group || "";
-        // Exact match OR child of selected group
-        const matches = group === selectedGroup || group.startsWith(selectedGroup + '/');
-        return matches;
-    });
+    // NO GROUP SELECTED MEANS EVERYTHING, not "the ones filed at the root".
+    //
+    // Both of these used to return only General when nothing was selected, so
+    // the default view of a dashboard with two projects on it was empty, and
+    // seeing any run at all meant first guessing which group it belonged to.
+    // The heading says "Pipelines" in that state, not "General pipelines",
+    // which is the reading this now matches.
+    const inSelectedGroup = (group: string | undefined) => {
+        if (selectedGroup === undefined) return true;
+        const g = group || "";
+        // The group itself, or anything filed beneath it.
+        return g === selectedGroup || g.startsWith(selectedGroup + '/');
+    };
 
-    const filteredBuildHistory = buildHistory.filter(b => {
-        const group = b.group || "General";
-        if (selectedGroup === undefined) return group === 'General'; // Root/General only
-        return group === selectedGroup || group.startsWith(selectedGroup + '/');
-    }).map((build, index, array) => ({
+    // Top-level groups only: the rail has room for one row of icons, and
+    // FileFreak/Server/Kubernetes collapses to the same FileFreak button that
+    // FileFreak/Client does. Clicking one selects it; expanding shows the rest.
+    const topLevelGroups = Array.from(
+        new Set(
+            pipelines
+                .map(p => (p.group || '').split('/')[0])
+                .filter(g => g && g !== 'General')
+        )
+    ).sort();
+
+    const filteredPipelines = pipelines.filter(p => inSelectedGroup(p.group));
+
+    const filteredBuildHistory = buildHistory.filter(b => inSelectedGroup(b.group)).map((build, index, array) => ({
         ...build,
         displayNumber: array.length - index  // Oldest = highest number
     }));
@@ -605,13 +620,71 @@ const DashboardPage: React.FC = () => {
                             />
                         </div>
                     ) : (
-                        <div className="flex flex-col items-center pt-4">
+                        /* COLLAPSED: an icon rail, not an empty strip.
+                           This used to render one chevron and nothing else, so
+                           collapsing the sidebar did not save space - it removed
+                           navigation entirely, and the only way back to a group
+                           was to expand again. One button per top-level group,
+                           selection still visible, so the rail is usable rather
+                           than merely narrow. */
+                        <div className="flex flex-col items-center gap-1 px-1">
                             <button
-                                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                                className="p-2 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors mb-4"
-                                title="Expand Sidebar"
+                                onClick={() => setSidebarCollapsed(false)}
+                                className="p-2 hover:bg-slate-700 rounded text-slate-400 hover:text-white transition-colors mb-2"
+                                title="Expand sidebar"
+                                aria-label="Expand sidebar"
+                                aria-expanded={false}
                             >
                                 <ChevronRight className="w-5 h-5 text-emerald-500" />
+                            </button>
+
+                            <button
+                                onClick={() => setSelectedGroup(undefined)}
+                                title="All pipelines"
+                                aria-label="All pipelines"
+                                aria-current={selectedGroup === undefined ? 'true' : undefined}
+                                className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors border ${
+                                    selectedGroup === undefined
+                                        ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                        : 'text-slate-400 border-transparent hover:bg-slate-700 hover:text-white'
+                                }`}
+                            >
+                                <LayoutGrid className="w-4 h-4" />
+                            </button>
+
+                            {topLevelGroups.map((g) => {
+                                // Highlighted when it is the selected group OR an
+                                // ancestor of it, so drilling into Notch.fm/Dev
+                                // still shows Notch.fm as where you are.
+                                const active = selectedGroup === g || (selectedGroup?.startsWith(g + '/') ?? false);
+                                return (
+                                    <button
+                                        key={g}
+                                        onClick={() => setSelectedGroup(g)}
+                                        title={g}
+                                        aria-label={g}
+                                        aria-current={active ? 'true' : undefined}
+                                        className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center transition-colors border ${
+                                            active
+                                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                                : 'text-slate-400 border-transparent hover:bg-slate-700 hover:text-white'
+                                        }`}
+                                    >
+                                        <Folder className="w-4 h-4" />
+                                        <span className="text-[9px] leading-none mt-0.5 font-semibold">
+                                            {g.slice(0, 2).toUpperCase()}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+
+                            <button
+                                onClick={() => setShowCreateModal(true)}
+                                title="New pipeline"
+                                aria-label="New pipeline"
+                                className="w-10 h-10 mt-2 rounded-lg flex items-center justify-center text-slate-400 border border-transparent hover:bg-emerald-600 hover:text-white transition-colors"
+                            >
+                                <Plus className="w-4 h-4" />
                             </button>
                         </div>
                     )}
