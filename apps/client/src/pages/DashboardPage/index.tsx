@@ -8,7 +8,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -74,7 +74,10 @@ const DashboardPage: React.FC = () => {
     const [logsExpanded, setLogsExpanded] = useState(false);
     const { token } = useAuth();
     const [logFilter, setLogFilter] = useState("");
-    const [activePipeline, setActivePipeline] = useState<Pipeline | null>(null);
+    // What to open, not just which pipeline: the Logs button needs a tab and a
+    // build id to land on.
+    type ModalTarget = { pipeline: Pipeline; tab?: 'steps' | 'environment' | 'resources' | 'schedule' | 'history' | 'versions'; buildId?: string };
+    const [activePipeline, setActivePipeline] = useState<ModalTarget | null>(null);
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
     const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
     const [newGroupName, setNewGroupName] = useState("");
@@ -559,7 +562,7 @@ const DashboardPage: React.FC = () => {
         });
 
         if (found) {
-            setActivePipeline(found);
+            setActivePipeline({ pipeline: found });
         }
     };
 
@@ -811,6 +814,25 @@ const DashboardPage: React.FC = () => {
                                                 {build.status === 'error' && <AlertTriangle className="w-4 h-4" />}
                                                 <span className="capitalize">{build.status === 'failed' && build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'Warning' : build.status}</span>
                                             </span>
+                                            {/* Straight to this run's logs. The history tab already
+                                                fetches /api/builds/:id/logs when a build is selected;
+                                                this just says which one, so reading the output of a
+                                                failed run is one click from where you saw it fail
+                                                rather than: open settings, find the tab, find the run. */}
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const p = pipelines.find(x => x.id === build.pipelineId);
+                                                    if (p) setActivePipeline({ pipeline: p, tab: 'history', buildId: build.id });
+                                                    else toast.error('That run\'s pipeline no longer exists');
+                                                }}
+                                                title="Open this run's logs"
+                                                aria-label={`Open logs for build ${build.buildNumber}`}
+                                                className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-2 py-1 rounded transition-colors flex items-center gap-1.5"
+                                            >
+                                                <FileText className="w-3.5 h-3.5" />
+                                                Logs
+                                            </button>
                                             {(build.status === 'running' || build.status === 'paused') ? (
                                                 <button
                                                     onClick={async (e) => {
@@ -850,7 +872,7 @@ const DashboardPage: React.FC = () => {
                                                 onClick={() => {
                                                     const pipeline = pipelines.find(p => p.id === build.pipelineId);
                                                     if (pipeline) {
-                                                        setActivePipeline(pipeline);
+                                                        setActivePipeline({ pipeline });
                                                     }
                                                 }}
                                                 className="text-slate-500 hover:text-emerald-400 transition-colors p-1 hover:bg-slate-800 rounded"
@@ -1059,7 +1081,9 @@ const DashboardPage: React.FC = () => {
             {
                 activePipeline && (
                     <PipelineSettingsModal
-                        pipeline={activePipeline}
+                        pipeline={activePipeline.pipeline}
+                        openTab={activePipeline.tab}
+                        openBuildId={activePipeline.buildId}
                         onClose={() => setActivePipeline(null)}
                         onUpdate={() => { fetchPipelines(); fetchGroups(); }}
                         availableGroups={groupsList}

@@ -34,9 +34,13 @@ interface PipelineSettingsModalProps {
     onClose: () => void;
     onUpdate: () => void;
     availableGroups: string[];
+    /** Open straight onto a tab, e.g. the dashboard's Logs button. */
+    openTab?: 'steps' | 'environment' | 'resources' | 'schedule' | 'history' | 'versions';
+    /** With openTab='history', select this run and show its logs immediately. */
+    openBuildId?: string;
 }
 
-const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline, onClose, onUpdate }) => {
+const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline, onClose, onUpdate, openTab, openBuildId }) => {
     const { token } = useAuth();
     const { confirm } = useConfirm();
 
@@ -50,7 +54,9 @@ const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline,
         canRun: true
     }; // Fallback to full access for backward compatibility if API doesn't return permissions
 
-    const initialTab = permissions.canEditYaml ? 'steps' : 'history';
+    // An explicit request wins over the permission default: arriving from the
+    // dashboard's Logs button should land on the logs, not on the YAML editor.
+    const initialTab = openTab ?? (permissions.canEditYaml ? 'steps' : 'history');
     const [activeTab, setActiveTab] = useState<'steps' | 'environment' | 'resources' | 'schedule' | 'history' | 'versions'>(initialTab);
 
     // Safety check: ensure activeTab is actually allowed, if not switch to history
@@ -426,7 +432,7 @@ const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline,
                         </div>
                     ) : activeTab === 'history' ? (
                         <div className="flex-1 p-4 h-full overflow-hidden">
-                            <HistoryView pipelineName={pipeline.id} />
+                            <HistoryView pipelineName={pipeline.id} initialBuildId={openBuildId} />
                         </div>
                     ) : null}
 
@@ -442,10 +448,12 @@ const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline,
     );
 };
 
-const HistoryView = ({ pipelineName }: { pipelineName: string }) => {
+const HistoryView = ({ pipelineName, initialBuildId }: { pipelineName: string; initialBuildId?: string }) => {
     const { confirm } = useConfirm();
     const [builds, setBuilds] = useState<any[]>([]);
-    const [selectedBuildId, setSelectedBuildId] = useState<string | null>(null);
+    // Seeded from the caller, so the logs are already on screen rather than one
+    // more click away after a click that was specifically asking for them.
+    const [selectedBuildId, setSelectedBuildId] = useState<string | null>(initialBuildId ?? null);
     const [logs, setLogs] = useState<string[]>([]);
     const [loadingLogs, setLoadingLogs] = useState(false);
 
