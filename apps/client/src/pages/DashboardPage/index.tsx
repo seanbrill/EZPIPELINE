@@ -8,7 +8,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -38,7 +38,14 @@ export interface BuildHistoryEntry {
     pipelineName: string;
     pipelineId: string;
     group: string;
-    status: 'running' | 'success' | 'failed' | 'aborted' | 'error';
+    /**
+     * 'paused' is a build waiting on an approval step. The server writes it at
+     * EZPipelineController.ts:1035; this union omitted it, so a paused build
+     * matched no branch: no status icon, and a Delete button where Abort
+     * belongs. The Approve button was gated on 'running', which a paused build
+     * is by definition not - so the only way to release a gate was a curl.
+     */
+    status: 'running' | 'paused' | 'success' | 'failed' | 'aborted' | 'error';
     startTime: string;
     endTime?: string;
     duration?: number;
@@ -217,7 +224,7 @@ const DashboardPage: React.FC = () => {
                     return;
                 }
 
-                if (type === 'progress' || type === 'build_start' || type === 'build_complete' || type === 'build_error' || type === 'build_aborted') {
+                if (type === 'progress' || type === 'build_start' || type === 'build_complete' || type === 'build_error' || type === 'build_aborted' || type === 'build_paused' || type === 'build_approved') {
                     // Refresh build history to get latest status
                     // Debounce or check?
                     // For now, just rely on fetch
@@ -713,6 +720,7 @@ const DashboardPage: React.FC = () => {
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
                                             <span className={`flex items-center gap-1.5 text-sm ${build.status === 'success' ? 'text-emerald-400' :
                                                 build.status === 'running' ? 'text-blue-400' :
+                                                build.status === 'paused' ? 'text-amber-300' :
                                                     build.status === 'failed' ? (
                                                         // Check if any step failed with continueOnError
                                                         build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'text-amber-400' : 'text-red-400'
@@ -722,6 +730,7 @@ const DashboardPage: React.FC = () => {
                                                 }`}>
                                                 {build.status === 'success' && <CheckCircle className="w-4 h-4" />}
                                                 {build.status === 'running' && <Loader className="w-4 h-4 animate-spin" />}
+                                                {build.status === 'paused' && <PauseCircle className="w-4 h-4" />}
                                                 {build.status === 'failed' && (
                                                     build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ?
                                                         <AlertTriangle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />
@@ -729,7 +738,7 @@ const DashboardPage: React.FC = () => {
                                                 {build.status === 'error' && <AlertTriangle className="w-4 h-4" />}
                                                 <span className="capitalize">{build.status === 'failed' && build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'Warning' : build.status}</span>
                                             </span>
-                                            {build.status === 'running' ? (
+                                            {(build.status === 'running' || build.status === 'paused') ? (
                                                 <button
                                                     onClick={async (e) => {
                                                         e.stopPropagation();
@@ -833,7 +842,7 @@ const DashboardPage: React.FC = () => {
                                                     </div>
 
                                                     {/* Approval Button - Only for 'approval' steps */}
-                                                    {build.status === 'running' && build.activeStep === step.name && (step.name.toLowerCase().includes('approv') || step.name.toLowerCase().includes('gate')) && (
+                                                    {(build.status === 'paused' || build.status === 'running') && build.activeStep === step.name && (step.name.toLowerCase().includes('approv') || step.name.toLowerCase().includes('gate')) && (
                                                         <div className="mt-3 flex justify-center">
                                                             <button
                                                                 onClick={async (e) => {
