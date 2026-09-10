@@ -161,6 +161,31 @@ export class GitWatchService {
             return;
         }
 
+        // ONE RUN AT A TIME PER PIPELINE.
+        //
+        // Every build of a pipeline shares one workspace directory, and the
+        // fetch step deletes and recreates it. So a second run starting while
+        // the first is mid-build pulls the source out from under it: observed
+        // as "The working directory has been deleted or recreated" followed by
+        // "Unable to find 'web/Dockerfile'" - a failure whose message points at
+        // a file that is present in the repository and absent from disk.
+        //
+        // Pushing several commits in a few minutes is enough to cause it, which
+        // is exactly what a watch on a busy branch does.
+        //
+        // Checked BEFORE the sha is recorded, so a skipped tick is not a lost
+        // commit: last_sha stays where it was and the next tick sees the head
+        // as new again. It will then deploy whatever is newest, which is what
+        // somebody pushing three times in a row wanted anyway.
+        if (this.isBuilding(w.pipeline_target)) {
+            this.logger.info(
+                `Git watch ${w.id}: ${w.branch} moved to ${sha.slice(0, 12)}, but a build of ` +
+                `${w.pipeline_target} is already running. Leaving it for the next tick.`
+            );
+            db.prepare(`UPDATE git_watches SET last_checked_at = ? WHERE id = ?`).run(now, w.id);
+            return;
+        }
+
         // The sha is recorded BEFORE the run is started. If starting throws, or
         // the process dies mid-start, the alternative is a watch that retries
         // the same commit every tick forever.
@@ -196,6 +221,33 @@ export class GitWatchService {
                 w.id
             );
             this.logger.error(`Git watch ${w.id} failed to start pipeline: ${msg}`);
+        }
+    }
+
+    /**
+     * Is a build of this pipeline already in flight?
+     *
+     * "paused" counts. A build waiting at an approval gate still owns the
+     * workspace, and starting a second one would delete the tree the first is
+     * going to come back to.
+     */
+    private isBuilding(pipelineTarget: string): boolean {
+        try {
+            const row = this.db
+                .getDb()
+                .prepare(
+                    `SELECT 1 FROM builds
+                      WHERE target = ? AND status IN ('running', 'paused')
+                      LIMIT 1`
+                )
+                .get(pipelineTarget);
+            return !!row;
+        } catch (e) {
+            // Unreadable means unknown, and unknown must not become "go ahead":
+            // the whole point is to avoid a second run, so the safe answer when
+            // we cannot tell is that there is one.
+            this.logger.warn(`Git watch could not check for running builds: ${e}`);
+            return true;
         }
     }
 
