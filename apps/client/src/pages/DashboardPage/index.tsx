@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import BuildTerminal from '../../components/BuildTerminal';
+import { formatDuration } from '../../helpers/formatDuration';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
 import FileTreeSidebar from '../../components/FileTreeSidebar';
 import CreatePipelineModal from '../../components/CreatePipelineModal';
@@ -911,13 +912,7 @@ const DashboardPage: React.FC = () => {
                                                 {build.duration !== undefined && build.duration > 0 && (
                                                     <span className="flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 py-0.5 rounded-full border border-emerald-400/20">
                                                         <Clock className="w-3 h-3" />
-                                                        {(() => {
-                                                            const s = Math.floor(build.duration / 1000);
-                                                            const m = Math.floor(s / 60);
-                                                            const sec = s % 60;
-                                                            if (m > 0) return `${m}m ${sec}s`;
-                                                            return `${sec}s`;
-                                                        })()}
+                                                        {formatDuration(build.duration)}
                                                     </span>
                                                 )}
                                             </div>
@@ -948,7 +943,7 @@ const DashboardPage: React.FC = () => {
                                                     </div>
 
                                                     <div className="text-slate-500 text-xs font-mono mb-1 h-4 mt-auto">
-                                                        {step.duration ? `${(step.duration / 1000).toFixed(1)}s` : step.status === 'running' ? '...' : '--'}
+                                                        {step.duration ? formatDuration(step.duration) : step.status === 'running' ? '...' : '--'}
                                                     </div>
 
                                                     <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
