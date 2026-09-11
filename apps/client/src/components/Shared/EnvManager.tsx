@@ -16,6 +16,26 @@ interface EnvManagerProps {
     isLoading?: boolean;
 }
 
+/**
+ * ONE HEIGHT FOR EVERY FIELD IN THIS PANEL.
+ *
+ * There used to be three, which is why a row jumped when you edited it and
+ * collapsed when a variable had no value:
+ *
+ *   the add row       py-2.5  -> about 42px
+ *   the edit inputs   py-1.5  -> about 34px
+ *   the value in VIEW py-1.5 on a div whose only child is a <span>. With an
+ *                     empty value that span has no line box at all, so the box
+ *                     shrank to its padding - about 14px - and an unset
+ *                     variable looked like a different kind of row.
+ *
+ * An input never collapses because a text input reserves a line box whatever
+ * it contains; a div wrapping empty text does not. So the fix is not "pad the
+ * div more", it is to give every field the same explicit height and stop
+ * depending on content to produce one.
+ */
+const FIELD_H = "h-10";
+
 const EnvVarRow = ({
     envVar,
     onDelete,
@@ -55,11 +75,11 @@ const EnvVarRow = ({
                     <input
                         value={editKeyInput}
                         onChange={(e) => setEditKeyInput(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
-                        className="w-full bg-black/40 border border-emerald-500/50 rounded px-2 py-1.5 text-emerald-400 font-mono text-sm focus:outline-none"
+                        className={`w-full ${FIELD_H} bg-black/40 border border-emerald-500/50 rounded px-2 text-emerald-400 font-mono text-sm focus:outline-none`}
                         autoFocus
                     />
                 ) : (
-                    <div className="font-mono text-emerald-400 font-bold px-2 truncate flex items-center gap-2" title={envVar.key}>
+                    <div className={`${FIELD_H} font-mono text-emerald-400 font-bold px-2 truncate flex items-center gap-2`} title={envVar.key}>
                         <span className="opacity-50 select-none">#</span> {envVar.key}
                     </div>
                 )}
@@ -76,7 +96,7 @@ const EnvVarRow = ({
                             type={showValue ? "text" : "password"}
                             value={editValueInput}
                             onChange={(e) => setEditValueInput(e.target.value)}
-                            className="w-full bg-black/40 border border-emerald-500/50 rounded px-2 py-1.5 text-white font-mono text-sm focus:outline-none pr-8"
+                            className={`w-full ${FIELD_H} bg-black/40 border border-emerald-500/50 rounded px-2 text-white font-mono text-sm focus:outline-none pr-8`}
                         />
                         <button
                             onClick={() => setShowValue(!showValue)}
@@ -86,10 +106,22 @@ const EnvVarRow = ({
                         </button>
                     </div>
                 ) : (
-                    <div className="bg-black/20 rounded px-3 py-1.5 border border-transparent group-hover:border-slate-700/50 flex justify-between items-center h-full">
-                        <span className="font-mono text-slate-300 text-sm truncate" title={showValue ? envVar.value : undefined}>
-                            {showValue ? envVar.value : '••••••••••••••••'}
-                        </span>
+                    <div className={`${FIELD_H} bg-black/20 rounded px-3 border border-transparent group-hover:border-slate-700/50 flex justify-between items-center`}>
+                        {/* AN EMPTY VALUE SAYS SO. It used to render sixteen
+                            dots whatever it held, so a variable nobody has set
+                            looked exactly like one holding a secret - and the
+                            dots were the only reason the box had any height at
+                            all. Now the height comes from FIELD_H and the text
+                            can tell the truth. */}
+                        {envVar.value === '' ? (
+                            <span className="font-mono text-slate-600 text-sm italic select-none">
+                                not set
+                            </span>
+                        ) : (
+                            <span className="font-mono text-slate-300 text-sm truncate" title={showValue ? envVar.value : undefined}>
+                                {showValue ? envVar.value : '••••••••••••••••'}
+                            </span>
+                        )}
                     </div>
                 )}
             </div>
@@ -266,7 +298,7 @@ const EnvManager: React.FC<EnvManagerProps> = ({
                                 value={newKey}
                                 onChange={(e) => setNewKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
                                 placeholder="NEW_ENV_KEY"
-                                className="w-full bg-black/40 border border-slate-700 text-emerald-400 font-mono text-sm rounded-lg pl-10 pr-4 py-2.5 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600"
+                                className={`w-full ${FIELD_H} bg-black/40 border border-slate-700 text-emerald-400 font-mono text-sm rounded-lg pl-10 pr-4 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600`}
                             />
                         </div>
                         {/* Spacer to match divider width */}
@@ -278,7 +310,7 @@ const EnvManager: React.FC<EnvManagerProps> = ({
                                 value={newValue}
                                 onChange={(e) => setNewValue(e.target.value)}
                                 placeholder="Enter value..."
-                                className="w-full bg-black/40 border border-slate-700 text-white font-mono text-sm rounded-lg pl-4 pr-10 py-2.5 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600"
+                                className={`w-full ${FIELD_H} bg-black/40 border border-slate-700 text-white font-mono text-sm rounded-lg pl-4 pr-10 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all placeholder:text-slate-600`}
                             />
                             <button
                                 onClick={() => setShowNewValue(!showNewValue)}
@@ -293,7 +325,7 @@ const EnvManager: React.FC<EnvManagerProps> = ({
                             <button
                                 onClick={handleAdd}
                                 disabled={!newKey.trim() || isLoading}
-                                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg font-bold shadow-lg shadow-emerald-900/20 flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap w-full justify-center"
+                                className={`${FIELD_H} bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 rounded-lg font-bold shadow-lg shadow-emerald-900/20 flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap w-full justify-center`}
                             >
                                 <Plus className="w-4 h-4" /> Add
                             </button>
