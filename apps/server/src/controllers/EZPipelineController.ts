@@ -56,6 +56,12 @@ export interface BuildHistoryEntry {
   triggeredBy: string;
   id?: string;
   activeStep?: string;
+  /** What this run contained. Empty when the workspace held no repository. */
+  commits?: { sha: string; shortSha: string; author: string; date: string; subject: string }[];
+  /** The head it built at, so the row can name a version without a commit list. */
+  commitSha?: string | null;
+  /** Images it produced. `rollbackable` is false for a mutable tag like latest. */
+  artifacts?: { reference: string; tag: string | null; digest: string | null; source: string; rollbackable: boolean }[];
 }
 
 import { execSync, spawn } from "child_process";
@@ -65,6 +71,7 @@ import dotenv from "dotenv";
 import Logger from "./Logger.js";
 import { Build } from "../types/other";
 import { VersioningService } from "../services/VersioningService.js";
+import { ProvenanceService } from "../services/ProvenanceService.js";
 import { BuildService } from "../services/BuildService.js";
 import { EventEmitter } from "events";
 
@@ -165,6 +172,15 @@ export default class EZPipelineController extends EventEmitter {
         endTime: b.ended_at ? new Date(b.ended_at) : undefined,
         triggeredBy: (b as any).triggered_by || 'manual',
         activeStep: activeStepName,
+        // Provenance, read alongside the row rather than fetched per build by
+        // the client: the dashboard renders a hundred of these and a request
+        // each would be a hundred requests to draw one page.
+        commitSha: (b as any).commit_sha ?? null,
+        commits: ProvenanceService.getInstance().commitsFor((b as any).commits ?? null),
+        artifacts: ProvenanceService.getInstance().artifactsFor(b.id).map((a) => ({
+          ...a,
+          rollbackable: ProvenanceService.isRollbackable(a),
+        })),
         duration: totalDuration,
         steps: pipeline ? pipeline.steps.map((s, index) => {
           let stepStatus: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'error' = 'pending';
@@ -351,6 +367,62 @@ export default class EZPipelineController extends EventEmitter {
     }).filter(p => p !== null && p !== undefined) as EZPIPELINEYAML[];
 
     this.logger.info(`Loaded ${this.targets.length} pipelines from ${pipelinesDir}`);
+  }
+
+  /**
+   * What this run contained and what it produced, written down once it is over.
+   *
+   * REPLACES `VersioningService.archiveBuild`, which ran here and did neither.
+   * Measured on this instance: with no Dockerfile at the workspace root it took
+   * the zip branch, and `zip` is not installed in the container - so every
+   * successful build ended with "Versioning failed", swallowed and logged as
+   * non-fatal. Had it worked it would have been worse: a 10-deep, 1GB-capped
+   * pile of zipped source checkouts, which is a snapshot you cannot deploy
+   * rather than anything you could roll back to.
+   *
+   * Rolling a container deployment back does not need a COPY of the image -
+   * the registry already has it. It needs a RECORD of which tag was deployed.
+   * So that is what this keeps.
+   *
+   * NEVER THROWS INTO THE BUILD. The build has already succeeded by the time
+   * this runs, and a note about it failing to be described must not change
+   * that - which is the one thing the old code did get right.
+   */
+  private recordProvenance(
+    buildId: string,
+    target: string,
+    workspaceDir: string,
+    buildLogger: { info: (m: string) => void }
+  ): void {
+    try {
+      const prov = ProvenanceService.getInstance();
+
+      const { headSha, commits } = prov.collectCommits(workspaceDir, target, buildId);
+      prov.saveCommits(buildId, headSha, commits);
+      if (commits.length > 0) {
+        buildLogger.info(
+          `📝 ${commits.length} commit${commits.length === 1 ? "" : "s"} in this run` +
+          (headSha ? ` (at ${headSha.slice(0, 7)})` : "")
+        );
+      }
+
+      // The build's own log, read back. A step can shell out to anything, and
+      // the log is the one place every builder's output already arrives - so
+      // this works for a pipeline that was never written with it in mind.
+      const lines = (this.buildService.getBuildLogs(buildId) ?? []).map(
+        (l: { message?: string } | string) => (typeof l === "string" ? l : l?.message ?? "")
+      );
+      const artifacts = prov.detectArtifacts(lines);
+      prov.saveArtifacts(buildId, target, artifacts);
+      if (artifacts.length > 0) {
+        buildLogger.info(
+          `📦 recorded ${artifacts.length} image${artifacts.length === 1 ? "" : "s"}: ` +
+          artifacts.map((a) => a.reference).join(", ")
+        );
+      }
+    } catch (e) {
+      this.logger.error("failed to record build provenance", e as Error);
+    }
   }
 
   private processK8Templates() {
@@ -633,7 +705,22 @@ export default class EZPipelineController extends EventEmitter {
     //check for templates in the k8s folder and replace any ${ENV_VARS} with the value
   }
 
-  public async run(pipelineId: string, existingBuild?: Build, options: { customYaml?: string, customWorkspace?: string, skipClean?: boolean, autoApprove?: boolean, triggeredBy?: string } = {}) {
+  public async run(pipelineId: string, existingBuild?: Build, options: {
+    customYaml?: string,
+    customWorkspace?: string,
+    skipClean?: boolean,
+    autoApprove?: boolean,
+    triggeredBy?: string,
+    /**
+     * Variables for THIS RUN ONLY, above every file-based layer.
+     *
+     * Written by a rollback, which is the one case where the instruction is
+     * more specific than any scope: "deploy this exact tag, whatever the
+     * pipeline would have built". They are never persisted, so the next
+     * ordinary run is unaffected.
+     */
+    envOverrides?: Record<string, string>,
+  } = {}) {
     let pipeline = this.targets.find(t => t.id === pipelineId);
 
     if (options.customYaml) {
@@ -1047,6 +1134,11 @@ export default class EZPipelineController extends EventEmitter {
           ...groupEnv,
           ...pipelineEnv,
           ...resourceEnv, // Inject RESOURCES
+          // ABOVE every file, because a rollback is a more specific
+          // instruction than any scope: deploy this exact tag whatever the
+          // pipeline would otherwise have built. Per-run and never written
+          // back, so the next ordinary run is unaffected.
+          ...(options.envOverrides ?? {}),
           ...currentStep.env,
           // Inject Standard Pipeline Variables
           PIPELINE_ID: pipeline.id,
@@ -1124,13 +1216,7 @@ export default class EZPipelineController extends EventEmitter {
           this.buildService.updateBuild(build.id, { percentage: 100, ended: build.ended, activeStep: undefined, status: 'success' });
           fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
 
-          buildLogger.info(`\n📦 Archiving build artifacts...`);
-          try {
-            VersioningService.getInstance().archiveBuild(pipelineDir, pipeline.appName, pipeline.version, workspaceDir);
-          } catch (archErr) {
-            this.logger.error(`❌ Versioning failed but build succeeded.`, archErr as Error);
-            this.buildService.log(build.id, `❌ Versioning failed: ${archErr}`);
-          }
+          this.recordProvenance(build.id, build.target, workspaceDir, buildLogger);
           this.emit("build_complete", build);
         }
 
@@ -1162,13 +1248,7 @@ export default class EZPipelineController extends EventEmitter {
       this.buildService.updateBuild(build.id, { percentage: 100, ended: build.ended, activeStep: undefined, status: 'success' });
       fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2));
 
-      buildLogger.info(`\n📦 Archiving build artifacts...`);
-      try {
-        VersioningService.getInstance().archiveBuild(pipelineDir, pipeline.appName, pipeline.version, workspaceDir);
-      } catch (archErr) {
-        this.logger.error(`❌ Versioning failed but build succeeded.`, archErr as Error);
-        this.buildService.log(build.id, `❌ Versioning failed: ${archErr}`);
-      }
+      this.recordProvenance(build.id, build.target, workspaceDir, buildLogger);
 
       this.emit("build_complete", build);
     }

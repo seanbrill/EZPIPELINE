@@ -5,6 +5,7 @@ import * as fs from "fs";
 import crypto from "crypto";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import Logger from "../controllers/Logger.js";
+import { ProvenanceService } from "../services/ProvenanceService.js";
 import { DatabaseService } from "../services/Database.js";
 import { GitWatchService } from "../services/GitWatchService.js";
 import bcrypt from "bcrypt";
@@ -1998,6 +1999,84 @@ router.post("/builds/:id/abort", authenticateToken, (req, res) => {
         res.json({ message: "Build aborted." });
     } catch (e: any) {
         Logger.getInstance().error(`Failed to abort build ${req.params.id}`, e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * Roll a pipeline back to what an earlier run deployed.
+ *
+ * WHAT THIS IS NOT: re-running the old build. That would rebuild from source
+ * and produce a NEW image, which is not a rollback - it is a rerun that
+ * happens to start from older code, and it fails the moment a dependency has
+ * moved underneath it.
+ *
+ * What it does is start the pipeline again with the earlier run's IMAGE TAG
+ * pinned, so the deploy step points the runtime at an image that already
+ * exists in the registry. Nothing is rebuilt and nothing is copied - the
+ * registry is already the artifact store, which is why EZPIPELINE does not
+ * need to be one.
+ *
+ * THE PIPELINE HAS TO MEET IT HALF WAY, and that is stated rather than hidden:
+ * EZPIPELINE sets the variables, and a pipeline decides what to do with them.
+ * One that ignores EZP_IMAGE_TAG will simply rebuild, which is a no-op rollback
+ * rather than a broken one. ci-cd/pipelines/deploy-dev.yaml in notch.fm is the
+ * reference implementation.
+ */
+router.post("/builds/:id/rollback", authenticateToken, async (req, res): Promise<void> => {
+    try {
+        const buildId = req.params.id;
+        if (!mayControlBuild(req, res, buildId)) return;
+
+        const db = DatabaseService.getInstance().getDb();
+        const build = db.prepare(
+            "SELECT id, target, build_number, status, commit_sha FROM builds WHERE id = ?"
+        ).get(buildId) as { id: string; target: string; build_number: number; status: string; commit_sha: string | null } | undefined;
+        if (!build) { res.status(404).json({ error: "No such build." }); return; }
+        if (build.status !== "success") {
+            // A failed run's images may exist but were never proved to work.
+            // Offering them is offering a rollback to something that was
+            // rejected the first time.
+            res.status(400).json({ error: "Only a successful run can be rolled back to." });
+            return;
+        }
+
+        const artifacts = ProvenanceService.getInstance().artifactsFor(build.id);
+        const targets = artifacts.filter((a) => ProvenanceService.isRollbackable(a));
+        if (targets.length === 0) {
+            res.status(400).json({
+                error: "That run recorded no image with a fixed tag, so there is nothing to point at. " +
+                    "Images tagged only `latest` cannot be rolled back to, because that tag has since moved.",
+            });
+            return;
+        }
+
+        // ONE TAG IS THE COMMON CASE and the useful one: a pipeline that tags
+        // every image it builds with the same commit sha. When a run produced
+        // several different tags there is no single answer, so the references
+        // are passed whole and the pipeline decides.
+        const tags = [...new Set(targets.map((a) => a.tag).filter(Boolean) as string[])];
+        const envOverrides: Record<string, string> = {
+            EZP_ROLLBACK: "1",
+            EZP_ROLLBACK_FROM_BUILD: String(build.build_number),
+            EZP_IMAGE_REFS: targets.map((a) => a.reference).join(","),
+        };
+        if (tags.length === 1) envOverrides.EZP_IMAGE_TAG = tags[0]!;
+        if (build.commit_sha) envOverrides.EZP_ROLLBACK_COMMIT = build.commit_sha;
+
+        const user = (req as any).user?.username ?? "unknown";
+        void EZPipelineController.instance.run(build.target, undefined, {
+            triggeredBy: `rollback to #${build.build_number} by ${user}`,
+            envOverrides,
+        });
+
+        res.json({
+            message: `Rolling back to build #${build.build_number}.`,
+            tag: tags.length === 1 ? tags[0] : null,
+            references: targets.map((a) => a.reference),
+        });
+    } catch (e: any) {
+        Logger.getInstance().error(`Failed to roll back to build ${req.params.id}`, e);
         res.status(500).json({ error: e.message });
     }
 });

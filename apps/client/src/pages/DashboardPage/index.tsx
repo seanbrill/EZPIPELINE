@@ -10,7 +10,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -64,6 +64,29 @@ export interface BuildHistoryEntry {
     triggeredBy: string;
     id: string; // BUILD UUID
     activeStep?: string;
+    /** What the run contained. Empty when its workspace held no repository. */
+    commits?: Commit[];
+    /** The head it built at. Present even when the commit list is not. */
+    commitSha?: string | null;
+    /** What it produced. `rollbackable` is false for a mutable tag like latest. */
+    artifacts?: Artifact[];
+}
+
+export interface Commit {
+    sha: string;
+    shortSha: string;
+    author: string;
+    date: string;
+    subject: string;
+}
+
+export interface Artifact {
+    reference: string;
+    tag: string | null;
+    digest: string | null;
+    /** 'marker' when the pipeline declared it, 'log' when we recognised it. */
+    source: string;
+    rollbackable: boolean;
 }
 
 /**
@@ -80,6 +103,94 @@ export interface BuildHistoryEntry {
  */
 const RUN_CTRL_H = "h-7";
 
+/**
+ * What a run contained, and what it produced.
+ *
+ * RENDERS NOTHING WHEN THERE IS NOTHING TO SAY. A pipeline that clones no
+ * repository and builds no image has no provenance, and an empty strip under
+ * every one of its runs would be a permanent reminder of a feature that does
+ * not apply to it.
+ *
+ * The commit list is collapsed by default. "Nine commits" is the fact somebody
+ * scanning the page wants; the nine subjects are what they want after they have
+ * decided this is the run they are looking at.
+ */
+function RunProvenance({
+    build,
+    onRollback,
+    busy,
+}: {
+    build: BuildHistoryEntry;
+    onRollback: (build: BuildHistoryEntry) => void;
+    busy: boolean;
+}) {
+    const [open, setOpen] = useState(false);
+    const commits = build.commits ?? [];
+    const artifacts = build.artifacts ?? [];
+    const rollbackable = artifacts.filter(a => a.rollbackable);
+    if (commits.length === 0 && artifacts.length === 0) return null;
+
+    return (
+        <div className="border-t border-slate-800 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            {commits.length > 0 && (
+                <button
+                    onClick={() => setOpen(o => !o)}
+                    className="flex items-center gap-1.5 text-slate-400 hover:text-white transition-colors"
+                    aria-expanded={open}
+                >
+                    <GitCommit className="w-3.5 h-3.5" />
+                    {commits.length} commit{commits.length === 1 ? '' : 's'}
+                    <ChevronRight className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+                </button>
+            )}
+
+            {build.commitSha && (
+                <span className="font-mono text-slate-500" title={build.commitSha}>
+                    @{build.commitSha.slice(0, 7)}
+                </span>
+            )}
+
+            {artifacts.map(a => (
+                <span
+                    key={a.reference}
+                    // A mutable tag is drawn quieter than a fixed one, because
+                    // it is the one you cannot go back to.
+                    className={`font-mono px-1.5 py-0.5 rounded border ${a.rollbackable
+                        ? 'text-cyan-300/90 border-cyan-500/25 bg-cyan-500/5'
+                        : 'text-slate-500 border-slate-700'}`}
+                    title={`${a.reference}${a.digest ? `\n${a.digest}` : ''}\nfound by: ${a.source}`}
+                >
+                    {a.tag ?? a.reference}
+                </span>
+            ))}
+
+            {build.status === 'success' && rollbackable.length > 0 && (
+                <button
+                    onClick={() => onRollback(build)}
+                    disabled={busy}
+                    className="ml-auto flex items-center gap-1.5 text-amber-300/90 hover:text-amber-200 border border-amber-500/30 hover:border-amber-400/50 rounded px-2 py-1 transition-colors disabled:opacity-50"
+                    title="Run this pipeline again, pinned to the images this run deployed"
+                >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    {busy ? 'Starting...' : 'Roll back to this'}
+                </button>
+            )}
+
+            {open && commits.length > 0 && (
+                <ul className="w-full mt-1 flex flex-col gap-1 border-l border-slate-800 pl-3">
+                    {commits.map(c => (
+                        <li key={c.sha} className="flex items-baseline gap-2 min-w-0">
+                            <span className="font-mono text-slate-500 shrink-0">{c.shortSha}</span>
+                            <span className="text-slate-300 truncate" title={c.subject}>{c.subject}</span>
+                            <span className="text-slate-600 shrink-0 ml-auto">{c.author}</span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+}
+
 const DashboardPage: React.FC = () => {
     const [pipelines, setPipelines] = useState<Pipeline[]>([]);
     const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
@@ -88,6 +199,8 @@ const DashboardPage: React.FC = () => {
     const [configuringGroup, setConfiguringGroup] = useState<string | undefined>(undefined);
     const [selectedPipelineForRun, setSelectedPipelineForRun] = useState<string>('');
     const [logsExpanded, setLogsExpanded] = useState(false);
+    /** Which build is mid-rollback, so its button alone shows it. */
+    const [rollingBack, setRollingBack] = useState<string | null>(null);
     const { token } = useAuth();
     const [logFilter, setLogFilter] = useState("");
     // What to open, not just which pipeline: the Logs button needs a tab and a
@@ -136,6 +249,48 @@ const DashboardPage: React.FC = () => {
             setBuildHistory(sorted);
         } catch (error) {
             console.error('Error fetching build history:', error);
+        }
+    };
+
+    /**
+     * Run the pipeline again, pinned to what an earlier run deployed.
+     *
+     * CONFIRMED, because it deploys. Every other button on this row either
+     * opens something or stops something; this one changes what is serving
+     * traffic, and the tag it will pin is named in the question so the answer
+     * is to a specific thing rather than to the word "rollback".
+     */
+    const rollbackTo = async (build: BuildHistoryEntry) => {
+        const targets = (build.artifacts ?? []).filter(a => a.rollbackable);
+        const tags = [...new Set(targets.map(a => a.tag).filter(Boolean))];
+        if (!await confirm({
+            title: `Roll back to build #${build.displayNumber ?? build.buildNumber}?`,
+            message:
+                `This starts ${build.pipelineName} again, pinned to ` +
+                (tags.length === 1 ? `tag ${tags[0]}` : `${targets.length} recorded images`) +
+                `. Nothing is rebuilt - it points the deployment at images that are already in the registry. ` +
+                `The pipeline has to honour EZP_IMAGE_TAG for that to take effect.`,
+            isDangerous: true,
+            confirmText: "Roll back",
+        })) return;
+
+        setRollingBack(build.id);
+        try {
+            const res = await fetch(`${API_URL}/api/builds/${build.id}/rollback`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || 'Rollback could not be started');
+            toast.success(body.message || 'Rolling back');
+            fetchBuildHistory();
+        } catch (e: any) {
+            // The server's own sentence. It distinguishes "that run recorded no
+            // fixed tag" from a generic failure, and only one of those has
+            // something the reader can do about it.
+            toast.error(e?.message || 'Rollback could not be started');
+        } finally {
+            setRollingBack(null);
         }
     };
 
@@ -990,6 +1145,11 @@ const DashboardPage: React.FC = () => {
                                                 </div>
                                             ))}
                                         </div>
+                                        <RunProvenance
+                                            build={build}
+                                            onRollback={rollbackTo}
+                                            busy={rollingBack === build.id}
+                                        />
                                     </div>
                                 </div>
                             ))
