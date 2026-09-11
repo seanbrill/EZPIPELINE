@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration } from '../../helpers/formatDuration';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
@@ -714,33 +715,15 @@ const DashboardPage: React.FC = () => {
                             <span className="text-sm font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Quick Run</span>
                             {filteredPipelines.length > 0 ? (
                                 <div className="flex gap-2 flex-1">
-                                    <select
+                                    {/* Was a native <select>, which cannot be searched, cannot
+                                        group, and dealt with two pipelines sharing a name by
+                                        appending "(group)" to both. See PipelinePicker. */}
+                                    <PipelinePicker
+                                        className="flex-1 max-w-md"
+                                        pipelines={filteredPipelines}
                                         value={selectedPipelineForRun}
-                                        onChange={(e) => setSelectedPipelineForRun(e.target.value)}
-                                        className="flex-1 max-w-md bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm focus:border-emerald-500 outline-none"
-                                    >
-                                        <option value="">Select a pipeline...</option>
-                                        {(() => {
-                                            // Calculate duplicates to decide when to show group
-                                            const nameCounts: Record<string, number> = {};
-                                            filteredPipelines.forEach(p => {
-                                                nameCounts[p.appName] = (nameCounts[p.appName] || 0) + 1;
-                                            });
-
-                                            return filteredPipelines.map(p => {
-                                                const isDuplicate = nameCounts[p.appName] > 1;
-                                                const label = isDuplicate && p.group && p.group !== 'General'
-                                                    ? `${p.appName} (${p.group})`
-                                                    : p.appName;
-
-                                                return (
-                                                    <option key={p.id} value={p.id}>
-                                                        {label}
-                                                    </option>
-                                                );
-                                            });
-                                        })()}
-                                    </select>
+                                        onChange={setSelectedPipelineForRun}
+                                    />
                                     <button
                                         onClick={() => selectedPipelineForRun && runPipeline(selectedPipelineForRun)}
                                         disabled={!selectedPipelineForRun}
