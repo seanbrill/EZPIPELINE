@@ -66,6 +66,20 @@ export interface BuildHistoryEntry {
     activeStep?: string;
 }
 
+/**
+ * ONE HEIGHT FOR EVERY CONTROL ON A RUN ROW.
+ *
+ * They were four: the Logs button at py-1, Abort as a py-1 rounded-full pill,
+ * Settings and Delete as bare p-1 icons, and a two-line time/duration block
+ * stacked beside them. Nothing shared a baseline, so "vertically aligned" was
+ * not something the row could be - each control was as tall as its own
+ * padding plus its own content.
+ *
+ * Stating the height once removes the question. Icon-only buttons take
+ * `aspect-square` with it so they are round-ish rather than tall and thin.
+ */
+const RUN_CTRL_H = "h-7";
+
 const DashboardPage: React.FC = () => {
     const [pipelines, setPipelines] = useState<Pipeline[]>([]);
     const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
@@ -774,8 +788,8 @@ const DashboardPage: React.FC = () => {
                         {filteredBuildHistory.length > 0 ? (
                             filteredBuildHistory.map((build) => (
                                 <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
-                                    <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
+                                    <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between gap-4">
+                                        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                                             <span className="text-slate-400 font-mono text-sm">#{build.displayNumber || build.buildNumber}</span>
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
                                             {/* Who started it. A push-triggered run is the one nobody
@@ -822,11 +836,33 @@ const DashboardPage: React.FC = () => {
                                                 {build.status === 'error' && <AlertTriangle className="w-4 h-4" />}
                                                 <span className="capitalize">{build.status === 'failed' && build.steps?.some((s: any) => s.status === 'failed' && s.continueOnError) ? 'Warning' : build.status}</span>
                                             </span>
-                                            {/* Straight to this run's logs. The history tab already
-                                                fetches /api/builds/:id/logs when a build is selected;
-                                                this just says which one, so reading the output of a
-                                                failed run is one click from where you saw it fail
-                                                rather than: open settings, find the tab, find the run. */}
+                                            {/* WHEN and HOW LONG are facts about the run, so they
+                                                sit with the rest of them. They used to be stacked in
+                                                the right-hand group beside the buttons, which is what
+                                                made that side impossible to align: a two-line block
+                                                next to a row of icons has no shared baseline. */}
+                                            <span className="theme-text-muted text-sm font-medium tabular-nums">
+                                                {new Date(build.startTime).toLocaleTimeString()}
+                                            </span>
+                                            {build.duration !== undefined && build.duration > 0 && (
+                                                <span className={`${RUN_CTRL_H} flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 rounded-full border border-emerald-400/20`}>
+                                                    <Clock className="w-3 h-3" />
+                                                    {formatDuration(build.duration)}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {/* EVERY CONTROL, ON THE RIGHT, IN ONE GROUP.
+                                            Logs and Abort used to live in the left-hand group among
+                                            the run's details - and Abort carried `ml-auto`, which
+                                            pushed it to the right edge of THAT group while the
+                                            parent was already doing justify-between. Two things
+                                            competing to place one button is why the spacing looked
+                                            arbitrary and moved as the details either side of it
+                                            changed width.
+                                            Information reads left to right; the things you can press
+                                            are always in the same place, whatever the run says. */}
+                                        <div className="flex shrink-0 items-center gap-2">
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -836,10 +872,23 @@ const DashboardPage: React.FC = () => {
                                                 }}
                                                 title="Open this run's logs"
                                                 aria-label={`Open logs for build ${build.buildNumber}`}
-                                                className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-2 py-1 rounded transition-colors flex items-center gap-1.5"
+                                                className={`${RUN_CTRL_H} text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-2.5 rounded transition-colors flex items-center gap-1.5`}
                                             >
                                                 <FileText className="w-3.5 h-3.5" />
                                                 Logs
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    const pipeline = pipelines.find(p => p.id === build.pipelineId);
+                                                    if (pipeline) {
+                                                        setActivePipeline({ pipeline });
+                                                    }
+                                                }}
+                                                className={`${RUN_CTRL_H} aspect-square text-slate-500 hover:text-emerald-400 transition-colors hover:bg-slate-800 rounded flex items-center justify-center`}
+                                                title="Open pipeline settings"
+                                                aria-label="Open pipeline settings"
+                                            >
+                                                <Settings className="w-4 h-4" />
                                             </button>
                                             {(build.status === 'running' || build.status === 'paused') ? (
                                                 <button
@@ -858,7 +907,7 @@ const DashboardPage: React.FC = () => {
                                                         });
                                                         fetchBuildHistory();
                                                     }}
-                                                    className="ml-auto bg-red-600/10 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-3 py-1 text-xs rounded-full font-bold transition-all flex items-center gap-1"
+                                                    className={`${RUN_CTRL_H} bg-red-600/10 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-3 text-xs rounded font-bold transition-all flex items-center gap-1`}
                                                 >
                                                     <Square className="w-3 h-3 fill-current" /> Abort
                                                 </button>
@@ -868,37 +917,13 @@ const DashboardPage: React.FC = () => {
                                                         e.stopPropagation();
                                                         deleteBuild(build.id);
                                                     }}
-                                                    className="ml-auto text-slate-500 hover:text-red-400 p-1 rounded hover:bg-slate-700 transition-all"
+                                                    className={`${RUN_CTRL_H} aspect-square text-slate-500 hover:text-red-400 rounded hover:bg-slate-700 transition-all flex items-center justify-center`}
                                                     title="Delete Build"
+                                                    aria-label="Delete build"
                                                 >
                                                     <Trash2 className="w-4 h-4" />
                                                 </button>
                                             )}
-                                        </div>
-                                        <div className="flex items-center gap-3">
-                                            <button
-                                                onClick={() => {
-                                                    const pipeline = pipelines.find(p => p.id === build.pipelineId);
-                                                    if (pipeline) {
-                                                        setActivePipeline({ pipeline });
-                                                    }
-                                                }}
-                                                className="text-slate-500 hover:text-emerald-400 transition-colors p-1 hover:bg-slate-800 rounded"
-                                                title="Open pipeline settings"
-                                            >
-                                                <Settings className="w-4 h-4" />
-                                            </button>
-                                            <div className="flex flex-col items-end gap-1">
-                                                <span className="theme-text-muted text-sm font-medium">
-                                                    {new Date(build.startTime).toLocaleTimeString()}
-                                                </span>
-                                                {build.duration !== undefined && build.duration > 0 && (
-                                                    <span className="flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 py-0.5 rounded-full border border-emerald-400/20">
-                                                        <Clock className="w-3 h-3" />
-                                                        {formatDuration(build.duration)}
-                                                    </span>
-                                                )}
-                                            </div>
                                         </div>
                                     </div>
                                     <div className="p-4 bg-slate-900/30">
