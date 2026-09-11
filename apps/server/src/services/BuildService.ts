@@ -28,6 +28,60 @@ export class BuildService {
         return id;
     }
 
+    /**
+     * A build that was running when this process stopped is not running now.
+     *
+     * WHY THIS EXISTS. A build's status lives in sqlite and its EXECUTION lives
+     * in this process. Stop the server mid-build - a restart, a crash, a
+     * container replaced under a deploy, a file saved while tsx is watching -
+     * and the row goes on saying `running` forever. Nothing ever revisits it,
+     * because the thing that would have written the ending died with the
+     * child process.
+     *
+     * That is not only an untidy row. GitWatchService refuses to start a build
+     * for a target that already has one running, deliberately, so ONE orphan
+     * silently stops every future automatic deploy of that pipeline - and the
+     * symptom is "the watch stopped working", days later, with nothing in the
+     * logs to connect it to a restart nobody remembers.
+     *
+     * So it is settled at boot, once, before anything else can read the table.
+     * Marked `failed` rather than `aborted`: nobody chose this, and the error
+     * says exactly what happened so the row does not have to be guessed at.
+     *
+     * What this CANNOT do is stop the work. A step that shelled out to a
+     * server-side build - `az acr build`, a remote job - is still going on
+     * somewhere, and its result will simply never be collected. The message
+     * says so, because "failed" on its own would be read as "nothing ran".
+     */
+    public failOrphanedBuilds(): number {
+        const db = this.db.getDb();
+        const orphans = db
+            .prepare("SELECT id, target, active_step FROM builds WHERE status = 'running'")
+            .all() as { id: string; target: string; active_step: string | null }[];
+        if (orphans.length === 0) return 0;
+
+        const now = new Date().toISOString();
+        const update = db.prepare(
+            "UPDATE builds SET status = 'failed', error = ?, ended_at = ? WHERE id = ?"
+        );
+        const note = db.prepare("INSERT INTO build_logs (build_id, message) VALUES (?, ?)");
+        db.transaction(() => {
+            for (const o of orphans) {
+                const where = o.active_step ? ` during "${o.active_step}"` : "";
+                update.run(
+                    `The server stopped while this build was running${where}, so it was never finished. Anything it had already handed to a remote builder may still have completed - this only means nothing collected the result.`,
+                    now,
+                    o.id
+                );
+                note.run(
+                    o.id,
+                    `[EZPIPELINE] Marked failed at startup: the server restarted while this build was running${where}.`
+                );
+            }
+        })();
+        return orphans.length;
+    }
+
     public updateBuild(id: string, updates: Partial<Build>) {
         const db = this.db.getDb();
 

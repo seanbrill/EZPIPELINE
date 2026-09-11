@@ -152,8 +152,25 @@ router.post("/system/reset", authenticateToken, (req, res) => {
     systemController.reset(req, res);
 });
 
+// A BUILD LOG IS THE BUILD'S OUTPUT, not a public record. It carries whatever
+// the pipeline printed: paths, hostnames, resource ids, and whatever a script
+// echoed before somebody thought better of it. This route was authenticated
+// and not authorised, so any signed-in account could read any pipeline's
+// output by id - which is the reason artifacts in this install are trimmed
+// before they are written and the credential cache lives outside the
+// workspace. `view` is the same permission the pipeline's page needs.
 router.get("/builds/:id/logs", authenticateToken, (req, res) => {
     const { id } = req.params;
+    const user = (req as any).user;
+    const build = buildService.getBuild(id);
+    if (!build) {
+        res.status(404).json({ error: "No such build." });
+        return;
+    }
+    if (!permissionsService.checkPermission(user.id, build.target, 'view')) {
+        res.status(403).json({ error: "You do not have permission to read that build." });
+        return;
+    }
     const logs = buildService.getBuildLogs(id);
     const messages = logs.map((l: any) => l.message);
     res.json({ logs: messages });
@@ -1911,9 +1928,60 @@ router.delete("/config/resources", authenticateToken, (req, res) => {
 
 
 // Build Approval and Abort Routes
+//
+// BOTH OF THESE USED TO BE authenticateToken AND NOTHING ELSE, which meant any
+// account that could sign in could release anybody's manual gate or kill
+// anybody's running deploy. A gate that anyone can open is not a gate, and it
+// is why pipelines in this install grew defensive workarounds - whatif-gate.py
+// protects a destructive plan with an exit code rather than with a manual
+// approval, precisely because the approval could not be trusted.
+//
+// The permission is `canRun` on the build's own pipeline: releasing a gate
+// resumes a run, and aborting stops one. Both are the same authority as
+// starting it, so neither should need a different grant.
+//
+// Admins and single-user installs are unaffected - checkPermission returns
+// true for an admin, and for every caller when AUTH_CONFIG.required is off.
+
+/**
+ * The pipeline a build belongs to, or null if there is no such build.
+ *
+ * `builds.target` is the pipeline name, and it is the only link between a
+ * build id and anything the permission model knows about.
+ */
+function pipelineOfBuild(buildId: string): string | null {
+    const build = buildService.getBuild(buildId);
+    return (build?.target as string | undefined) ?? null;
+}
+
+/**
+ * Refuse unless this user may run that build's pipeline.
+ *
+ * A MISSING BUILD IS A 404 AND NOT AN APPROVAL. The order matters: looking the
+ * build up first means an unknown id can never fall through to the controller,
+ * which would otherwise be asked to approve something nobody can name.
+ */
+function mayControlBuild(req: any, res: any, buildId: string): boolean {
+    const user = req.user;
+    const pipeline = pipelineOfBuild(buildId);
+    if (!pipeline) {
+        res.status(404).json({ error: "No such build." });
+        return false;
+    }
+    if (!permissionsService.checkPermission(user.id, pipeline, 'run')) {
+        Logger.getInstance().warn(
+            `Denied: ${user.username} tried to control build ${buildId} on ${pipeline}`
+        );
+        res.status(403).json({ error: `You do not have permission to run ${pipeline}.` });
+        return false;
+    }
+    return true;
+}
+
 router.post("/builds/:id/approve", authenticateToken, (req, res) => {
     try {
         const buildId = req.params.id; // UUID
+        if (!mayControlBuild(req, res, buildId)) return;
         EZPipelineController.instance.approveBuild(buildId);
         res.json({ message: "Build approved and resumed." });
     } catch (e: any) {
@@ -1925,6 +1993,7 @@ router.post("/builds/:id/approve", authenticateToken, (req, res) => {
 router.post("/builds/:id/abort", authenticateToken, (req, res) => {
     try {
         const buildId = req.params.id; // UUID or number
+        if (!mayControlBuild(req, res, buildId)) return;
         EZPipelineController.instance.abort(buildId);
         res.json({ message: "Build aborted." });
     } catch (e: any) {

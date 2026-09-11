@@ -27,6 +27,7 @@ import { migrateGranularPermissions } from "./migrations/007_granular_permission
 import { migrateGitWatches } from "./migrations/008_git_watches.js";
 import { migrateBuildTriggeredBy } from "./migrations/009_build_triggered_by.js";
 import { SchedulerService } from "./services/SchedulerService.js";
+import { BuildService } from "./services/BuildService.js";
 import { GitWatchService } from "./services/GitWatchService.js";
 
 // Initialize database
@@ -85,6 +86,24 @@ try {
     migrateBuildTriggeredBy();
 } catch (e) {
     Logger.getInstance().warn(`Build triggered_by migration skipped or already applied: ${e}`);
+}
+
+// A build that was running when this process last stopped is not running now.
+//
+// BEFORE THE SCHEDULER AND THE GIT WATCH, deliberately. Both of them refuse to
+// start a build for a target that already has one running, so an orphaned row
+// does not merely look wrong - it silently stops every future automatic deploy
+// of that pipeline until somebody notices. Settling it first means they start
+// from the truth.
+try {
+    const orphaned = BuildService.getInstance().failOrphanedBuilds();
+    if (orphaned > 0) {
+        Logger.getInstance().warn(
+            `Marked ${orphaned} build(s) as failed: they were running when the server last stopped.`
+        );
+    }
+} catch (e) {
+    Logger.getInstance().error(`Could not reconcile orphaned builds: ${e}`);
 }
 
 // Initialize scheduler
