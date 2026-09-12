@@ -463,15 +463,12 @@ const HistoryView = ({ pipelineName, initialBuildId }: { pipelineName: string; i
         })
             .then(res => res.json())
             .then(data => {
-                // Sort by startTime DESC (newest first) and add dynamic numbering
+                // Newest first. NOT renumbered: see DashboardPage - numbering
+                // by position capped the visible number at the page size and
+                // made the same build change number as others arrived.
                 const sorted = (data.builds || [])
                     .sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-                const total = sorted.length;
-                const numbered = sorted.map((build: any, index: number) => ({
-                    ...build,
-                    displayNumber: total - index  // Oldest = highest number
-                }));
-                setBuilds(numbered);
+                setBuilds(sorted);
             });
     };
 
@@ -557,7 +554,7 @@ const HistoryView = ({ pipelineName, initialBuildId }: { pipelineName: string; i
                             onClick={() => setSelectedBuildId(build.id)}
                         >
                             <div className="flex items-center justify-between mb-1">
-                                <span className="text-slate-400 font-mono text-xs">#{typeof build.id === 'string' ? (build.displayNumber || build.id.substring(0, 8)) : (build.displayNumber || build.id)}</span>
+                                <span className="text-slate-400 font-mono text-xs">#{build.buildNumber || (typeof build.id === 'string' ? build.id.substring(0, 8) : build.id)}</span>
                                 {build.status === 'success' && <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
                                 {build.status === 'running' && <RotateCcw className="w-3 h-3 animate-spin text-blue-500" />}
                                 {build.status === 'failed' && (

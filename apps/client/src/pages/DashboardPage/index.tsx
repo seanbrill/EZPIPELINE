@@ -34,7 +34,7 @@ interface Pipeline {
 const LOG_BUFFER_MAX = 5000;
 
 export interface BuildHistoryEntry {
-    /** The build's own uuid. Stable; buildNumber is a display position and is not. */
+    /** The build's own uuid. `buildNumber` is the build's real number. */
     id: string;
     buildNumber: number;
     pipelineName: string;
@@ -51,7 +51,6 @@ export interface BuildHistoryEntry {
     startTime: string;
     endTime?: string;
     duration?: number;
-    displayNumber?: number;  // Dynamic numbering for display
     steps: Array<{
         name: string;
         status: 'pending' | 'running' | 'success' | 'failed' | 'error';
@@ -264,7 +263,7 @@ const DashboardPage: React.FC = () => {
         const targets = (build.artifacts ?? []).filter(a => a.rollbackable);
         const tags = [...new Set(targets.map(a => a.tag).filter(Boolean))];
         if (!await confirm({
-            title: `Roll back to build #${build.displayNumber ?? build.buildNumber}?`,
+            title: `Roll back to build #${build.buildNumber}?`,
             message:
                 `This starts ${build.pipelineName} again, pinned to ` +
                 (tags.length === 1 ? `tag ${tags[0]}` : `${targets.length} recorded images`) +
@@ -766,10 +765,19 @@ const DashboardPage: React.FC = () => {
 
     const filteredPipelines = pipelines.filter(p => inSelectedGroup(p.group));
 
-    const filteredBuildHistory = buildHistory.filter(b => inSelectedGroup(b.group)).map((build, index, array) => ({
-        ...build,
-        displayNumber: array.length - index  // Oldest = highest number
-    }));
+    // THE BUILD'S OWN NUMBER, not its position in this list.
+    //
+    // This used to be `array.length - index`, which renumbered every build by
+    // where it happened to sit in whatever page had been fetched. Two things
+    // followed. The visible number CAPPED at the page size - the newest build
+    // read #100 forever while the database was already at #103, which is how
+    // this was reported. And the number was not stable: the same build was
+    // called something different tomorrow, and the rollback confirmation
+    // ("Roll back to build #N?") named a build by a number that had already
+    // moved, while the pipeline itself was handed the real build_number.
+    //
+    // The server has sent the real one all along, as `buildNumber`.
+    const filteredBuildHistory = buildHistory.filter(b => inSelectedGroup(b.group));
 
     return (
         <div className="flex flex-col h-full bg-[var(--color-bg)]">
@@ -945,7 +953,7 @@ const DashboardPage: React.FC = () => {
                                 <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
                                     <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between gap-4">
                                         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-                                            <span className="text-slate-400 font-mono text-sm">#{build.displayNumber || build.buildNumber}</span>
+                                            <span className="text-slate-400 font-mono text-sm">#{build.buildNumber}</span>
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
                                             {/* Who started it. A push-triggered run is the one nobody
                                                 was watching, so it is worth telling apart from a run
