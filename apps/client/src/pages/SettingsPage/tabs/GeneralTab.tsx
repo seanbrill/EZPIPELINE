@@ -238,7 +238,7 @@ const EnvTagsSettings: React.FC = () => {
 };
 
 // ... existing imports
-import { Mail, Check, RefreshCw, Send } from 'lucide-react';
+import { Mail } from 'lucide-react';
 
 // ... existing GeneralTab component
 

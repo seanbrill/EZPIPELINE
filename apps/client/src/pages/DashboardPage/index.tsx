@@ -61,7 +61,6 @@ export interface BuildHistoryEntry {
         continueOnError?: boolean;  // For status display logic
     }>;
     triggeredBy: string;
-    id: string; // BUILD UUID
     activeStep?: string;
     /** What the run contained. Empty when its workspace held no repository. */
     commits?: Commit[];

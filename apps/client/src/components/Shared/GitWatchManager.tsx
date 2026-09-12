@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { GitBranch, Trash2, Plus, AlertTriangle, CheckCircle2, XCircle, FolderTree } from 'lucide-react';
+import { GitBranch, Trash2, Plus, AlertTriangle, CheckCircle2, XCircle, FolderTree, Pencil, Check, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -52,6 +52,11 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
     const [targets, setTargets] = useState<Target[]>([]);
     const [busy, setBusy] = useState(false);
     const [adding, setAdding] = useState(false);
+    // Which watch is being edited in place, and the two fields it edits. Null
+    // is "none": a row id would make the first row look permanently open.
+    const [editing, setEditing] = useState<number | null>(null);
+    const [editBranch, setEditBranch] = useState('');
+    const [editPoll, setEditPoll] = useState('');
 
     const [pipelineTarget, setPipelineTarget] = useState('');
     const [repoUrl, setRepoUrl] = useState('');
@@ -163,6 +168,35 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
         } catch { toast.error('Could not update that watch'); }
     };
 
+    /**
+     * Editing an existing watch, rather than deleting and re-adding it.
+     *
+     * Branch and interval only. Which PIPELINE a watch runs is not editable on
+     * purpose: that is a different watch wearing the same row, and its history
+     * of what it deployed would no longer be about the thing it points at.
+     */
+    const startEdit = (w: Watch) => {
+        setEditing(w.id);
+        setEditBranch(w.branch);
+        setEditPoll(String(w.poll_seconds));
+    };
+
+    const saveEdit = async (w: Watch) => {
+        const branch = editBranch.trim();
+        if (!branch) { toast.error('A watch needs a branch to follow'); return; }
+        // Floor matches the server's, so the UI cannot promise a 5-second poll
+        // the server will quietly turn into 15.
+        const poll = Math.max(15, Number(editPoll) || w.poll_seconds);
+        const body: Record<string, unknown> = {};
+        if (branch !== w.branch) body.branch = branch;
+        if (poll !== w.poll_seconds) body.pollSeconds = poll;
+        // PATCH answers 400 to an empty body, so a save that changed nothing is
+        // closed here rather than sent and reported as a failure.
+        if (Object.keys(body).length === 0) { setEditing(null); return; }
+        await patch(w, body);
+        setEditing(null);
+    };
+
     const toggleAutoApprove = async (w: Watch) => {
         if (!w.auto_approve) {
             const label = targets.find(t => t.id === w.pipeline_target)?.appName ?? w.pipeline_target;
@@ -225,10 +259,60 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
                                     </span>
                                 )}
                             </div>
-                            <p className="mt-1 truncate font-mono text-xs text-slate-400">
-                                {w.repo_url} <span className="text-slate-500">#</span>{w.branch}
-                                <span className="text-slate-500"> · every {w.poll_seconds}s</span>
-                            </p>
+                            {editing === w.id ? (
+                                /* EDIT IN PLACE, rather than delete-and-recreate.
+                                   Changing which branch a watch follows used to mean
+                                   removing it and adding it back, which loses the
+                                   remembered sha and the row's history for what is
+                                   usually a one-word change. The PATCH route has
+                                   always supported this; only the UI did not. */
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                    <span className="font-mono text-xs text-slate-500">
+                                        {w.repo_url} #
+                                    </span>
+                                    <input
+                                        value={editBranch}
+                                        onChange={e => setEditBranch(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') void saveEdit(w);
+                                            if (e.key === 'Escape') setEditing(null);
+                                        }}
+                                        autoFocus
+                                        placeholder="branch"
+                                        className="w-40 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 font-mono text-xs text-white"
+                                    />
+                                    <span className="text-xs text-slate-500">every</span>
+                                    <input
+                                        type="number"
+                                        min={15}
+                                        value={editPoll}
+                                        onChange={e => setEditPoll(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') void saveEdit(w);
+                                            if (e.key === 'Escape') setEditing(null);
+                                        }}
+                                        className="w-20 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-white"
+                                    />
+                                    <span className="text-xs text-slate-500">seconds</span>
+                                </div>
+                            ) : (
+                                <p className="mt-1 truncate font-mono text-xs text-slate-400">
+                                    {w.repo_url} <span className="text-slate-500">#</span>{w.branch}
+                                    <span className="text-slate-500"> · every {w.poll_seconds}s</span>
+                                </p>
+                            )}
+                            {editing === w.id && editBranch.trim() !== w.branch && (
+                                /* SAID BEFORE SAVING, because it looks like data loss
+                                   afterwards. The server clears the remembered sha when
+                                   the branch changes, so the next check adopts the new
+                                   branch's head instead of deploying it - otherwise
+                                   pointing a watch at a different branch would fire a
+                                   deploy for a commit that is not new. */
+                                <p className="mt-1 text-xs text-amber-300/80">
+                                    Changing the branch starts from that branch's current head:
+                                    the next check adopts it, and the push after that deploys.
+                                </p>
+                            )}
                             <p className="mt-1 text-xs text-slate-500">
                                 {w.last_error ? (
                                     <span className="text-rose-400 inline-flex items-center gap-1">
@@ -247,6 +331,23 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
                             </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
+                            {editing === w.id ? (
+                                <>
+                                    <button onClick={() => void saveEdit(w)}
+                                        className="rounded-lg border border-emerald-500/40 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 inline-flex items-center gap-1">
+                                        <Check className="h-3.5 w-3.5" /> Save
+                                    </button>
+                                    <button onClick={() => setEditing(null)}
+                                        className="rounded-lg border border-slate-600 p-1.5 text-slate-400 hover:bg-slate-800">
+                                        <X className="h-4 w-4" />
+                                    </button>
+                                </>
+                            ) : (
+                                <button onClick={() => startEdit(w)} title="Edit branch and interval"
+                                    className="rounded-lg border border-slate-600 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+                                    <Pencil className="h-4 w-4" />
+                                </button>
+                            )}
                             <button onClick={() => void patch(w, { enabled: !w.enabled })}
                                 className="rounded-lg border border-slate-600 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">
                                 {w.enabled ? 'Pause' : 'Resume'}
