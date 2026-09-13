@@ -848,31 +848,47 @@ const DashboardPage: React.FC = () => {
     };
 
     /**
+     * Which pipeline a tree path refers to.
+     *
+     * The tree deals in bundle directories ("Notch.fm/Prod/deploy-prod") and a
+     * pipeline knows its own file ("…/deploy-prod/pipeline.yaml"), so the match
+     * is on the directory plus the filename.
+     */
+    const pipelineAtPath = (path: string) =>
+        pipelines.find(p => p.filePath?.endsWith(`${path}/pipeline.yaml`));
+
+    /**
      * Clicking a pipeline in the tree ARMS IT, it does not open the editor.
      *
      * It used to throw the settings modal over the whole dashboard, so the
-     * common act of picking which pipeline to look at cost a modal and a
-     * dismissal, and browsing the tree meant opening and closing the YAML
-     * editor repeatedly. Editing is the rarer intent and has its own button on
-     * every run row.
+     * common act of choosing which pipeline to look at cost a modal and a
+     * dismissal, and browsing the tree meant opening and closing a YAML editor
+     * repeatedly. Editing is the rarer intent, and it has two buttons of its
+     * own: beside Run, and on the tree row itself.
      *
-     * Selecting the group as well is the part that makes this work rather than
-     * merely look like it works: the Quick Run picker is fed from the pipelines
-     * in the CURRENT group, so arming one filed somewhere else would set a
-     * value the picker cannot display - a Run button pointed at a name nobody
-     * can see.
+     * Selecting the group as well is what makes this work rather than merely
+     * appear to. The Quick Run picker is fed from the pipelines in the CURRENT
+     * group, so arming one filed somewhere else would set a value the picker
+     * cannot display: a Run button aimed at a name nobody can see.
      */
     const handleSelectPipeline = (path: string) => {
-        const found = pipelines.find(p => {
-            if (!p.filePath) return false;
-            // Bundle Path: .../Testing/test/pipeline.yaml
-            // Path: Testing/test
-            return p.filePath.endsWith(`${path}/pipeline.yaml`);
-        });
+        const found = pipelineAtPath(path);
         if (!found) return;
-
         if (!inSelectedGroup(found.group)) setSelectedGroup(found.group || undefined);
         setSelectedPipelineForRun(found.id);
+    };
+
+    /**
+     * Open the editor for a pipeline named in the tree.
+     *
+     * THE ROUTE THAT DOES NOT NEED A BUILD. The gear on a run row was the only
+     * other one, and a pipeline that has never run has no run row - so once
+     * clicking the tree stopped opening the editor, a newly created pipeline
+     * could not be opened at all.
+     */
+    const handleOpenPipeline = (path: string) => {
+        const found = pipelineAtPath(path);
+        if (found) setActivePipeline({ pipeline: found });
     };
 
     const groupsList = Array.from(allGroups).sort();
@@ -930,6 +946,7 @@ const DashboardPage: React.FC = () => {
                                 selectedGroup={selectedGroup || ''}
                                 onSelectGroup={setSelectedGroup}
                                 onSelectPipeline={handleSelectPipeline}
+                                onOpenPipeline={handleOpenPipeline}
                                 onCreateGroup={createGroup}
                                 onDeleteGroup={deleteGroup}
                                 onRenameGroup={triggerRenameGroup}
@@ -1047,6 +1064,27 @@ const DashboardPage: React.FC = () => {
                                     >
                                         <Play className="w-4 h-4" />
                                         Run
+                                    </button>
+                                    {/* THE WAY TO THE EDITOR THAT DOES NOT NEED A BUILD.
+                                        The other one is the gear on a run row, which a
+                                        pipeline that has never run does not have - so
+                                        until this existed, a newly created pipeline
+                                        could not be opened at all once clicking it in
+                                        the tree stopped doing so. It sits beside Run
+                                        because that is where the selection now lives:
+                                        this is the pipeline you have picked, here is
+                                        running it and here is editing it. */}
+                                    <button
+                                        onClick={() => {
+                                            const p = pipelines.find(x => x.id === selectedPipelineForRun);
+                                            if (p) setActivePipeline({ pipeline: p });
+                                        }}
+                                        disabled={!selectedPipelineForRun}
+                                        className="bg-slate-800 hover:bg-slate-700 disabled:bg-slate-800/40 disabled:cursor-not-allowed disabled:opacity-40 text-slate-300 hover:text-white border border-slate-700 px-4 py-2 rounded font-medium transition-colors flex items-center gap-2"
+                                        title="Edit this pipeline: steps, environment, resources, schedule"
+                                    >
+                                        <Settings className="w-4 h-4" />
+                                        Settings
                                     </button>
                                 </div>
                             ) : (

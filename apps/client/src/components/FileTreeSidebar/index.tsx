@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, FolderPlus, Edit2, Box, Search } from 'lucide-react';
+import { Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, FolderPlus, Edit2, Box, Search, Settings } from 'lucide-react';
 import { usePreferences } from '../../contexts/PreferencesContext';
 import { TAG_COLORS } from '../../constants/tagColors';
 import { readJSON, writeJSON } from '../../helpers/persistedState';
@@ -20,6 +20,8 @@ interface FileTreeSidebarProps {
     selectedGroup: string;
     onSelectGroup: (group: string) => void;
     onSelectPipeline: (path: string) => void;
+    /** Open the settings editor for a pipeline, from the tree. */
+    onOpenPipeline?: (path: string) => void;
     onCreateGroup: (parent?: string) => void;
     onDeleteGroup: (group: string) => void;
     onRenameGroup: (group: string) => void;
@@ -35,6 +37,7 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
     selectedGroup,
     onSelectGroup,
     onSelectPipeline,
+    onOpenPipeline,
     onCreateGroup,
     onDeleteGroup,
     onRenameGroup,
@@ -287,6 +290,19 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
                                     <Edit2 className="w-3 h-3" />
                                 </button>
                             </>
+                        )}
+                        {isPipeline && onOpenPipeline && (
+                            // Straight to the editor from the tree. Clicking the row
+                            // itself arms the pipeline for Quick Run rather than opening
+                            // this, which is the common intent - but "edit it" should not
+                            // then require going via a build that may not exist.
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onOpenPipeline(node.path); }}
+                                className="p-1 hover:text-emerald-400 transition-colors"
+                                title="Pipeline settings"
+                            >
+                                <Settings className="w-3 h-3" />
+                            </button>
                         )}
                         <button
                             onClick={(e) => { e.stopPropagation(); onDeleteGroup(node.path); }}
