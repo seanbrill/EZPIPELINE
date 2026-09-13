@@ -28,6 +28,7 @@ import path from "path";
 import Logger from "../controllers/Logger.js";
 
 const run = promisify(execFile);
+import { credentialForGroup, gitWith } from "./gitCredentials.js";
 
 /** One link in the chain. `do` names the verb; the rest is that verb's own. */
 export interface PipelineAction {
@@ -58,6 +59,16 @@ export interface ActionContext {
     startPipeline: (target: string, triggeredBy: string, autoApprove: boolean) => void;
     /** Does a pipeline with this id exist? Checked before anything is changed. */
     pipelineExists: (target: string) => boolean;
+    /**
+     * The group this pipeline belongs to, so a git write can find the
+     * credential configured for it.
+     *
+     * WITHOUT THIS, a merge authenticates with whatever the SERVER HOST has -
+     * unnamed, unreadable from the interface, and its permissions living on
+     * the forge. That is how a read-only deploy key went unnoticed until the
+     * first time anybody pressed a button that needed to write.
+     */
+    group?: string;
 }
 
 const logger = Logger.getInstance();
@@ -116,22 +127,45 @@ async function mergeBranch(action: PipelineAction, ctx: ActionContext): Promise<
     }
     if (from === into) throw new Error(`merge-branch: \`from\` and \`into\` are both ${from}`);
 
+    // The credential configured for this group, or none - in which case git
+    // falls back to the host's own configuration, exactly as before. Passing
+    // null is a supported state rather than an error: an instance that has
+    // always worked keeps working, and the screen is how you improve on it.
+    const cred = ctx.group ? credentialForGroup(ctx.group) : null;
+
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ezp-merge-"));
     try {
-        await run("git", ["init", "--quiet", dir]);
-        await run("git", ["-C", dir, "remote", "add", "origin", repo]);
-        await run("git", ["-C", dir, "fetch", "--quiet", "--depth", "1", "origin", from]);
+        await gitWith(cred, ["init", "--quiet", dir]);
+        await gitWith(cred, ["-C", dir, "remote", "add", "origin", repo]);
+        await gitWith(cred, ["-C", dir, "fetch", "--quiet", "--depth", "1", "origin", from]);
         // FETCH_HEAD is the tip of `from`. Pushing it at `into` without --force
         // is the fast-forward check.
-        const { stdout } = await run("git", [
+        const { stdout } = await gitWith(cred, [
             "-C", dir, "push", "origin", `FETCH_HEAD:refs/heads/${into}`,
         ]);
-        const sha = (await run("git", ["-C", dir, "rev-parse", "--short=12", "FETCH_HEAD"])).stdout.trim();
+        const sha = (await gitWith(cred, ["-C", dir, "rev-parse", "--short=12", "FETCH_HEAD"])).stdout.trim();
         const said = stdout.trim() || "up to date";
         return `${from} -> ${into} at ${sha} (${said})`;
     } catch (e: unknown) {
         const err = e as { stderr?: string; message?: string };
         const detail = (err.stderr || err.message || String(e)).trim().slice(0, 400);
+        // THE REFUSAL THAT ACTUALLY HAPPENED, and it said none of this. The
+        // button reported git's sentence and left the operator with "not even
+        // sure how the git credentials were set". Name the credential, say
+        // where to fix it, and say what to do - GitHub deploy keys cannot be
+        // edited after they are added, which is the part nobody guesses.
+        if (/read only|denied to|permission/i.test(detail)) {
+            const who = cred
+                ? `The credential "${cred.name}" on the ${cred.group_path} group`
+                : `The server host's own git configuration (this group has no credential set)`;
+            throw new Error(
+                `${who} cannot write to ${repo}. Git said: ${detail}\n` +
+                `If this is a GitHub deploy key, it cannot be changed after it is added: ` +
+                `delete it and add it again with "Allow write access" ticked. ` +
+                `Then press Test on the group's Credentials tab, which asks this exact ` +
+                `question without needing a deploy to find out.`
+            );
+        }
         // The failure worth naming, because it is the one that will happen.
         if (/non-fast-forward|rejected/i.test(detail)) {
             throw new Error(

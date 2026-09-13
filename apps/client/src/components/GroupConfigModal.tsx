@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Key, File as FileIcon, FolderTree, GitBranch } from 'lucide-react';
+import { X, Key, File as FileIcon, FolderTree, GitBranch, KeyRound } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../contexts/ConfirmationContext';
 import { useToast } from '../contexts/ToastContext';
 import EnvManager from './Shared/EnvManager';
 import ResourceManager from './Shared/ResourceManager';
 import GitWatchManager from './Shared/GitWatchManager';
+import GitCredentialManager from './Shared/GitCredentialManager';
 import API_URL from '../config/api';
 
 interface Props {
@@ -25,7 +26,7 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
     const { token } = useAuth();
     const { confirm } = useConfirm();
     const toast = useToast();
-    const [tab, setTab] = useState<'env' | 'resources' | 'autodeploy'>('env');
+    const [tab, setTab] = useState<'env' | 'resources' | 'autodeploy' | 'credentials'>('env');
     const [vars, setVars] = useState<Array<{ key: string; value: string }>>([]);
     const g = encodeURIComponent(group);
 
@@ -59,7 +60,7 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
         await fetchVars();
     };
 
-    const tabBtn = (id: 'env' | 'resources' | 'autodeploy', label: string, Icon: typeof Key) => (
+    const tabBtn = (id: 'env' | 'resources' | 'autodeploy' | 'credentials', label: string, Icon: typeof Key) => (
         <button
             onClick={() => setTab(id)}
             className={`px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border ${
@@ -96,10 +97,16 @@ const GroupConfigModal: React.FC<Props> = ({ group, onClose }) => {
                     {tabBtn('env', 'Environment', Key)}
                     {tabBtn('resources', 'Resources', FileIcon)}
                     {tabBtn('autodeploy', 'Auto deploy', GitBranch)}
+                    {/* Beside Auto deploy because that is what uses it: a watch
+                        reads a branch and the promote button writes one, and
+                        both were silently using whatever the host had. */}
+                    {tabBtn('credentials', 'Credentials', KeyRound)}
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto p-5 custom-scrollbar">
-                    {tab === 'autodeploy' ? (
+                    {tab === 'credentials' ? (
+                        <GitCredentialManager group={group} />
+                    ) : tab === 'autodeploy' ? (
                         <GitWatchManager group={group} />
                     ) : tab === 'env' ? (
                         <div className="border border-slate-700 rounded-xl overflow-hidden h-[50vh]">

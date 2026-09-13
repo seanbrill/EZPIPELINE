@@ -26,6 +26,7 @@ import { MailService, PROVIDERS, providerById } from "../services/mail/index.js"
 import { SettingsService } from "../services/SettingsService.js";
 import globalEnvRouter from "./globalEnv.js";
 import groupEnvRouter from "./groupEnv.js";
+import gitCredentialsRouter from "./gitCredentials.js";
 import { DATA_DIR, PORT, PUBLIC_DIR, EMAIL_CONFIG, PIPELINES_DIR, AUTH_CONFIG } from "../config/index.js";
 
 // ... (existing imports)
@@ -48,6 +49,10 @@ const globalUpload = multer({ dest: path.join(DATA_DIR, 'tmp_uploads') });
 // Mount global env routes
 router.use("/global-env", authenticateToken, globalEnvRouter);
 router.use("/group-env", authenticateToken, groupEnvRouter);
+// Beside group-env deliberately: same scope, same permission, and the
+// argument for scoping an environment variable to a group is stronger
+// still for a deploy key.
+router.use("/git-credentials", authenticateToken, gitCredentialsRouter);
 
 // ... (existing endpoints)
 
@@ -2041,15 +2046,19 @@ router.post("/builds/:id/action", authenticateToken, async (req, res) => {
             return;
         }
 
-        // The repository this pipeline watches, so a merge does not have to
-        // name what a watch already knows.
+        // The repository this pipeline watches AND the group it belongs to, so
+        // a merge does not have to name what a watch already knows, and a git
+        // write can find the credential configured for this group rather than
+        // falling back to whatever the server host happens to have.
         let defaultRepoUrl: string | undefined;
+        let group: string | undefined;
         try {
             const row = DatabaseService.getInstance()
                 .getDb()
-                .prepare(`SELECT repo_url FROM git_watches WHERE pipeline_target = ? LIMIT 1`)
-                .get(build.target) as { repo_url?: string } | undefined;
+                .prepare(`SELECT repo_url, group_path FROM git_watches WHERE pipeline_target = ? LIMIT 1`)
+                .get(build.target) as { repo_url?: string; group_path?: string } | undefined;
             defaultRepoUrl = row?.repo_url;
+            group = row?.group_path ?? undefined;
         } catch {
             /* a watch is optional; the action can still name its own repo */
         }
@@ -2060,6 +2069,7 @@ router.post("/builds/:id/action", authenticateToken, async (req, res) => {
             pipelineTarget: build.target,
             actor,
             defaultRepoUrl,
+            group,
             pipelineExists: (t) => controller.targets.some((x) => x.id === t),
             startPipeline: (t, triggeredBy, autoApprove) => {
                 controller.run(t, undefined, { triggeredBy, autoApprove });
