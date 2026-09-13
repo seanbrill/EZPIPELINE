@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
-import { formatDuration } from '../../helpers/formatDuration';
+import { formatDuration, formatDurationCompact } from '../../helpers/formatDuration';
 import { readJSON, writeJSON } from '../../helpers/persistedState';
 import { stepProgress } from '../../helpers/stepProgress';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
@@ -1309,16 +1309,31 @@ const DashboardPage: React.FC = () => {
                                                             : null;
                                                         return (
                                                             <>
-                                                                <div className="text-slate-500 text-xs font-mono mb-1 h-4 mt-auto">
+                                                                {/* ONE LINE, ALWAYS. This row is the last thing above
+                                                                    the progress bar and used to be locked to h-4, so
+                                                                    the longer running text wrapped to a second line
+                                                                    and the bar was drawn straight over it. Now it
+                                                                    cannot wrap, cannot overflow, and the row can grow
+                                                                    if a future format ever needs it to. */}
+                                                                <div
+                                                                    className="text-slate-500 text-xs font-mono mb-1 min-h-4 mt-auto whitespace-nowrap overflow-hidden text-ellipsis"
+                                                                    title={step.duration
+                                                                        ? formatDuration(step.duration)
+                                                                        : elapsed !== null
+                                                                            ? `${formatDuration(elapsed)} so far${step.estimatedDuration ? `, usually about ${formatDuration(step.estimatedDuration)}` : ''}`
+                                                                            : undefined}
+                                                                >
                                                                     {step.duration
                                                                         ? formatDuration(step.duration)
                                                                         : elapsed !== null
-                                                                            // Elapsed, and what it usually takes. Seeing
-                                                                            // "2m10s / ~40s" is the whole point: it says
-                                                                            // this run is slow, which "..." never did.
-                                                                            ? <>{formatDuration(elapsed)}
+                                                                            // Elapsed AND the usual time, which is the
+                                                                            // whole point: "2m10s / ~40s" says this run
+                                                                            // is slow, where "..." never did. Compact,
+                                                                            // because two long-form durations do not fit
+                                                                            // a 120px card. The full wording is on hover.
+                                                                            ? <>{formatDurationCompact(elapsed)}
                                                                                 {step.estimatedDuration
-                                                                                    ? <span className="text-slate-600"> / ~{formatDuration(step.estimatedDuration)}</span>
+                                                                                    ? <span className="text-slate-600"> / ~{formatDurationCompact(step.estimatedDuration)}</span>
                                                                                     : null}
                                                                             </>
                                                                             : step.status === 'running' ? '...' : '--'}

@@ -43,3 +43,37 @@ export function formatDuration(ms: number | null | undefined): string {
 
     return parts.join(" ");
 }
+
+/**
+ * The same length, written as short as it can be and still be read.
+ *
+ * A running step card shows elapsed time AND the usual time, which is two
+ * durations in a box about 120px wide. In the long form that reads
+ * "1min 51s / ~3min 59s" - twenty characters, which wraps onto a second line.
+ * The card pins its progress bar to the bottom of a fixed-height row, so the
+ * wrapped line and the bar were drawn on top of each other.
+ *
+ * Same rule as the long form, largest unit first and smaller ones only while
+ * they carry information, with the words cut to single letters and the spaces
+ * removed: "1m51s / ~4m" is eleven characters and fits.
+ */
+export function formatDurationCompact(ms: number | null | undefined): string {
+    if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return "--";
+
+    const totalSeconds = ms / 1000;
+    if (totalSeconds < 10) {
+        if (ms < 50) return "<1s";
+        return `${totalSeconds.toFixed(1)}s`;
+    }
+
+    const whole = Math.round(totalSeconds);
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    const seconds = whole % 60;
+
+    // An hour-long step drops its seconds. "1h15m" is what somebody glancing
+    // at a card wants; the trailing 38s is three more characters of noise.
+    if (hours > 0) return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
+    if (minutes > 0) return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
+    return `${seconds}s`;
+}
