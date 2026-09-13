@@ -142,6 +142,56 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
         handleChange('steps', newSteps);
     };
 
+    /**
+     * Which steps are open, by index.
+     *
+     * A SET OF OPEN ONES, not of closed ones, so a pipeline that grows a step
+     * gets it collapsed like the rest rather than open because nobody had
+     * closed it yet.
+     */
+    const [openSteps, setOpenSteps] = useState<Set<number>>(new Set());
+
+    /**
+     * Collapsed by default once there are more than four steps.
+     *
+     * Below that the whole list fits and hiding it would be ceremony. Above
+     * it, the editor is a page you scroll for a minute to reach step twelve,
+     * and "which steps does this have" cannot be seen at all.
+     *
+     * Keyed on the step COUNT rather than run once on mount: opening a
+     * different pipeline in the same modal should get the same treatment, and
+     * it is the only thing that changes when one does.
+     */
+    const stepCount = Array.isArray(parsed?.steps) ? parsed.steps.length : 0;
+    useEffect(() => {
+        setOpenSteps(stepCount > 4 ? new Set() : new Set(Array.from({ length: stepCount }, (_, i) => i)));
+    }, [stepCount]);
+
+    const toggleStep = (idx: number) =>
+        setOpenSteps(prev => {
+            const next = new Set(prev);
+            if (next.has(idx)) next.delete(idx);
+            else next.add(idx);
+            return next;
+        });
+
+    /** One line saying what a collapsed step is, without opening it. */
+    const stepSummary = (step: any): string => {
+        if (step?.type === 'approval') return 'Approval gate';
+        if (step?.type === 'action') {
+            const chain = Array.isArray(step.actions) ? step.actions : [];
+            return chain.length ? `Anytime action: ${chain.map((a: any) => a?.do).filter(Boolean).join(' then ')}` : 'Anytime action';
+        }
+        const first = String(step?.run ?? '')
+            .split('\n')
+            .map((l: string) => l.trim())
+            // The first line that is neither blank nor a comment, because
+            // `set -euo pipefail` and a comment block are what every one of
+            // these starts with and say nothing about this step.
+            .find((l: string) => l && !l.startsWith('#') && l !== 'set -euo pipefail');
+        return first ? first.slice(0, 90) : 'No command';
+    };
+
     const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
     const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -607,7 +657,31 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                         {/* Steps List */}
                         <div className="space-y-6">
                             <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                                <h3 className="font-bold text-lg text-white">Pipeline Steps</h3>
+                                <h3 className="font-bold text-lg text-white">
+                                    Pipeline Steps
+                                    <span className="ml-2 text-sm font-normal text-slate-500">
+                                        {stepCount}
+                                        {openSteps.size > 0 && openSteps.size < stepCount && (
+                                            <span className="text-slate-600">, {openSteps.size} open</span>
+                                        )}
+                                    </span>
+                                </h3>
+                                {stepCount > 1 && (
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => setOpenSteps(new Set(Array.from({ length: stepCount }, (_, i) => i)))}
+                                            className="text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 rounded px-2 py-1 transition-colors"
+                                        >
+                                            Expand all
+                                        </button>
+                                        <button
+                                            onClick={() => setOpenSteps(new Set())}
+                                            className="text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 rounded px-2 py-1 transition-colors"
+                                        >
+                                            Collapse all
+                                        </button>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="space-y-4">
@@ -628,9 +702,32 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                             <GripVertical className="w-5 h-5" />
                                         </div>
 
+                                        {/* THE COLLAPSED ROW, always rendered. It is the
+                                            table of contents when everything is shut and the
+                                            handle to close one again when it is open, so it
+                                            does not disappear on expand. */}
+                                        <button
+                                            onClick={() => toggleStep(idx)}
+                                            className="w-full flex items-center gap-2 text-left pl-6 pr-2 py-1 group/head"
+                                            aria-expanded={openSteps.has(idx)}
+                                        >
+                                            <ChevronDown
+                                                className={`w-4 h-4 flex-shrink-0 text-slate-500 transition-transform ${openSteps.has(idx) ? '' : '-rotate-90'}`}
+                                            />
+                                            <span className={`text-sm font-bold truncate ${
+                                                step.type === 'approval' ? 'text-yellow-500'
+                                                    : step.type === 'action' ? 'text-cyan-400'
+                                                        : 'text-emerald-400'}`}>
+                                                {step.name || '(unnamed)'}
+                                            </span>
+                                            {!openSteps.has(idx) && (
+                                                <span className="text-[11px] font-mono text-slate-600 truncate">
+                                                    {stepSummary(step)}
+                                                </span>
+                                            )}
+                                        </button>
 
-
-                                        {step.type === 'action' ? (
+                                        {!openSteps.has(idx) ? null : step.type === 'action' ? (
                                             <div className="pl-6 py-2 space-y-4">
                                                 <div className="flex items-center gap-3">
                                                     <div className="w-10 h-10 rounded-lg bg-cyan-900/20 flex items-center justify-center text-cyan-400 border border-cyan-700/50">
