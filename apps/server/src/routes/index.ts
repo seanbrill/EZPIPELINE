@@ -5,6 +5,7 @@ import * as fs from "fs";
 import crypto from "crypto";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import Logger from "../controllers/Logger.js";
+import { runActionChain } from "../services/ActionRunner.js";
 import { ProvenanceService } from "../services/ProvenanceService.js";
 import { DatabaseService } from "../services/Database.js";
 import { GitWatchService } from "../services/GitWatchService.js";
@@ -1987,6 +1988,87 @@ router.post("/builds/:id/approve", authenticateToken, (req, res) => {
         res.json({ message: "Build approved and resumed." });
     } catch (e: any) {
         Logger.getInstance().error(`Failed to approve build ${req.params.id}`, e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * Press an anytime action on a build.
+ *
+ * An `action` step never runs as part of the pipeline: it sits on the build
+ * and waits. This is the press. See services/ActionRunner.ts for why the
+ * chain stops at the first failure.
+ *
+ * GUARDED THE SAME WAY A RUN IS. "Merge develop into main and deploy
+ * production" is at least as consequential as starting the pipeline, so it
+ * takes the same permission, not a lesser one because it looks like a button.
+ */
+router.post("/builds/:id/action", authenticateToken, async (req, res) => {
+    try {
+        const buildId = req.params.id;
+        if (!mayControlBuild(req, res, buildId)) return;
+
+        const stepName = typeof req.body?.step === "string" ? req.body.step : "";
+        if (!stepName) {
+            res.status(400).json({ error: "which step? send { step: <name> }" });
+            return;
+        }
+
+        const controller = EZPipelineController.instance;
+        // Read from disk, not from the copy loaded at boot: an action edited in
+        // the UI should be the one that runs, and a stale chain here would do
+        // the old thing while the screen showed the new one.
+        controller.refreshTargets();
+
+        const build = BuildService.getInstance().getBuild(buildId);
+        if (!build) {
+            res.status(404).json({ error: "No such build." });
+            return;
+        }
+        const pipeline = controller.targets.find((t) => t.id === build.target);
+        const step = pipeline?.steps.find((s) => s.name === stepName);
+        if (!pipeline || !step) {
+            res.status(404).json({ error: `No step "${stepName}" on this pipeline.` });
+            return;
+        }
+        if (step.type !== "action") {
+            res.status(400).json({ error: `"${stepName}" is not an anytime action.` });
+            return;
+        }
+        const actions = Array.isArray(step.actions) ? step.actions : [];
+        if (actions.length === 0) {
+            res.status(400).json({ error: `"${stepName}" has no actions configured.` });
+            return;
+        }
+
+        // The repository this pipeline watches, so a merge does not have to
+        // name what a watch already knows.
+        let defaultRepoUrl: string | undefined;
+        try {
+            const row = DatabaseService.getInstance()
+                .getDb()
+                .prepare(`SELECT repo_url FROM git_watches WHERE pipeline_target = ? LIMIT 1`)
+                .get(build.target) as { repo_url?: string } | undefined;
+            defaultRepoUrl = row?.repo_url;
+        } catch {
+            /* a watch is optional; the action can still name its own repo */
+        }
+
+        const actor = (req as any).user?.username ?? "someone";
+        const result = await runActionChain(actions as any, {
+            buildId,
+            pipelineTarget: build.target,
+            actor,
+            defaultRepoUrl,
+            pipelineExists: (t) => controller.targets.some((x) => x.id === t),
+            startPipeline: (t, triggeredBy, autoApprove) => {
+                controller.run(t, undefined, { triggeredBy, autoApprove });
+            },
+        });
+
+        res.status(result.ok ? 200 : 500).json(result);
+    } catch (e: any) {
+        Logger.getInstance().error(`Action failed on build ${req.params.id}`, e);
         res.status(500).json({ error: e.message });
     }
 });

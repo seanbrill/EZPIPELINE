@@ -1,7 +1,57 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useToast } from '../../contexts/ToastContext';
 import { parse, stringify } from 'yaml';
-import { GripVertical, X, Plus, Terminal, Eye, Code, CheckCircle2, Wrench, ChevronDown } from 'lucide-react';
+import { GripVertical, X, Plus, Terminal, Eye, Code, CheckCircle2, Wrench, ChevronDown, Zap } from 'lucide-react';
+
+/**
+ * The verbs an anytime action can perform, and what each one needs.
+ *
+ * Mirrors ACTION_KINDS in the server's ActionRunner. Kept here as well rather
+ * than fetched, because this is a form and a form that cannot draw itself
+ * until a request returns is a form that flickers.
+ *
+ * `fields` is what the editor renders for that verb. Anything the server
+ * accepts and this does not list is still editable in the YAML tab, which
+ * stays the source of truth.
+ */
+const ACTION_KINDS: {
+    value: string;
+    label: string;
+    hint: string;
+    fields: { key: string; label: string; placeholder?: string; type?: 'text' | 'checkbox' }[];
+}[] = [
+    {
+        value: 'run-pipeline',
+        label: 'Start another pipeline',
+        hint: 'Its own approval gates still apply unless you tick auto-approve.',
+        fields: [
+            { key: 'pipeline', label: 'Pipeline id', placeholder: '7c1f3a58-...' },
+            { key: 'autoApprove', label: 'Skip that pipeline\u2019s approval gates', type: 'checkbox' },
+        ],
+    },
+    {
+        value: 'merge-branch',
+        label: 'Merge one branch into another',
+        hint: 'Fast-forward only, so it can never invent a merge commit or overwrite work.',
+        fields: [
+            { key: 'from', label: 'From', placeholder: 'develop' },
+            { key: 'into', label: 'Into', placeholder: 'main' },
+            { key: 'repo', label: 'Repository (optional)', placeholder: 'defaults to this pipeline\u2019s git watch' },
+        ],
+    },
+    {
+        value: 'shell',
+        label: 'Run a command',
+        hint: 'Runs on the EZPIPELINE host, not in a pipeline workspace.',
+        fields: [{ key: 'run', label: 'Command', placeholder: 'echo hello' }],
+    },
+    {
+        value: 'notify',
+        label: 'Write a notice',
+        hint: 'Puts a line in the log. Says something happened; does nothing.',
+        fields: [{ key: 'message', label: 'Message', placeholder: 'Promoted to production' }],
+    },
+];
 
 interface StepsTabProps {
     content: string;
@@ -53,14 +103,36 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
         handleChange('steps', newSteps);
     };
 
-    const addStep = (type: 'shell' | 'approval' = 'shell') => {
+    const addStep = (type: 'shell' | 'approval' | 'action' = 'shell') => {
         const currentSteps = Array.isArray(parsed?.steps) ? parsed.steps : [];
         const newStep = type === 'approval'
             ? { name: 'Approval Gate', type: 'approval' }
-            : { name: 'New Step', run: 'echo "hello"', continueOnError: false, shell: 'bash' };
+            : type === 'action'
+                // Starts with one action and confirmation ON. A button that
+                // does something the moment it is created, before anybody has
+                // said what it does, is the wrong default.
+                ? { name: 'Promote', type: 'action', confirm: true, actions: [{ do: 'run-pipeline' }] }
+                : { name: 'New Step', run: 'echo "hello"', continueOnError: false, shell: 'bash' };
 
         const newSteps = [...currentSteps, newStep];
         handleChange('steps', newSteps);
+    };
+
+    /** Read the chain off a step, tolerating a step that has none yet. */
+    const chainOf = (step: any): any[] => (Array.isArray(step?.actions) ? step.actions : []);
+
+    const setChain = (idx: number, chain: any[]) => handleStepChange(idx, 'actions', chain);
+
+    const setActionField = (idx: number, ai: number, key: string, value: unknown) => {
+        const chain = [...chainOf(parsed?.steps?.[idx])];
+        const next = { ...chain[ai] };
+        // An empty optional field is REMOVED rather than written as "", so the
+        // yaml stays the shape somebody would have typed and the server's
+        // "was this supplied" checks keep working.
+        if (value === '' || value === false) delete next[key];
+        else next[key] = value;
+        chain[ai] = next;
+        setChain(idx, chain);
     };
 
     const removeStep = (index: number) => {
@@ -558,7 +630,149 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
 
 
 
-                                        {step.type === 'approval' ? (
+                                        {step.type === 'action' ? (
+                                            <div className="pl-6 py-2 space-y-4">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-lg bg-cyan-900/20 flex items-center justify-center text-cyan-400 border border-cyan-700/50">
+                                                        <Zap className="w-6 h-6" />
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="text-sm font-bold text-white">Anytime action</h4>
+                                                        <p className="text-xs text-slate-400">
+                                                            A button on every build of this pipeline. Never runs as part of the
+                                                            pipeline; it waits to be pressed, including long after the run has finished.
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-12 gap-4">
+                                                    <div className="col-span-12 lg:col-span-6">
+                                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Button label</label>
+                                                        <input
+                                                            className="w-full mt-1 bg-black/20 border border-slate-700 rounded p-2 text-sm text-cyan-400 font-bold focus:border-cyan-500 outline-none"
+                                                            value={step.name || ''}
+                                                            onChange={e => handleStepChange(idx, 'name', e.target.value)}
+                                                        />
+                                                    </div>
+                                                    <div className="col-span-12 lg:col-span-6 flex items-end pb-2">
+                                                        <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={step.confirm !== false}
+                                                                onChange={e => handleStepChange(idx, 'confirm', e.target.checked)}
+                                                                className="w-4 h-4 rounded border-slate-700 bg-black/20 text-cyan-500"
+                                                            />
+                                                            <span className="text-xs text-slate-300">
+                                                                Ask before running
+                                                                <span className="block text-[10px] text-slate-500">
+                                                                    Off means one press does it. On means a confirmation first.
+                                                                </span>
+                                                            </span>
+                                                        </label>
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                                            Does this, in order
+                                                        </label>
+                                                        <button
+                                                            onClick={() => setChain(idx, [...chainOf(step), { do: 'notify' }])}
+                                                            className="bg-slate-800 hover:bg-cyan-900/30 text-slate-400 hover:text-cyan-400 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 border border-slate-700"
+                                                        >
+                                                            <Plus className="w-3 h-3" /> Add action
+                                                        </button>
+                                                    </div>
+
+                                                    {chainOf(step).length === 0 && (
+                                                        <p className="text-xs text-slate-500 italic">
+                                                            Nothing yet. The button stays disabled until there is at least one action.
+                                                        </p>
+                                                    )}
+
+                                                    <div className="space-y-3">
+                                                        {chainOf(step).map((action: any, ai: number) => {
+                                                            const kind = ACTION_KINDS.find(k => k.value === action.do);
+                                                            return (
+                                                                <div key={ai} className="bg-black/20 border border-slate-800 rounded-lg p-3">
+                                                                    <div className="flex items-center gap-2 mb-2">
+                                                                        <span className="text-[10px] font-mono text-slate-600 w-4">{ai + 1}</span>
+                                                                        <select
+                                                                            className="flex-1 bg-black/30 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:border-cyan-500 outline-none"
+                                                                            value={action.do || ''}
+                                                                            onChange={e => {
+                                                                                // Switching the verb drops the old verb's fields,
+                                                                                // which would otherwise sit in the yaml meaning
+                                                                                // nothing and reappear if it were switched back.
+                                                                                const chain = [...chainOf(step)];
+                                                                                chain[ai] = { do: e.target.value };
+                                                                                setChain(idx, chain);
+                                                                            }}
+                                                                        >
+                                                                            <option value="">Choose an action...</option>
+                                                                            {ACTION_KINDS.map(k => (
+                                                                                <option key={k.value} value={k.value}>{k.label}</option>
+                                                                            ))}
+                                                                        </select>
+                                                                        <button
+                                                                            onClick={() => setChain(idx, chainOf(step).filter((_: any, i: number) => i !== ai))}
+                                                                            className="p-1.5 text-slate-600 hover:text-red-400 transition-colors"
+                                                                            title="Remove this action"
+                                                                        >
+                                                                            <X className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                    </div>
+
+                                                                    {kind && (
+                                                                        <>
+                                                                            <p className="text-[10px] text-slate-500 mb-2 pl-6">{kind.hint}</p>
+                                                                            <div className="grid grid-cols-12 gap-2 pl-6">
+                                                                                {kind.fields.map(f => (
+                                                                                    <div key={f.key} className={f.type === 'checkbox' ? 'col-span-12' : 'col-span-12 sm:col-span-6'}>
+                                                                                        {f.type === 'checkbox' ? (
+                                                                                            <label className="flex items-center gap-2 cursor-pointer py-1">
+                                                                                                <input
+                                                                                                    type="checkbox"
+                                                                                                    checked={action[f.key] === true}
+                                                                                                    onChange={e => setActionField(idx, ai, f.key, e.target.checked)}
+                                                                                                    className="w-4 h-4 rounded border-slate-700 bg-black/20 text-cyan-500"
+                                                                                                />
+                                                                                                <span className="text-xs text-slate-300">{f.label}</span>
+                                                                                            </label>
+                                                                                        ) : (
+                                                                                            <>
+                                                                                                <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">{f.label}</label>
+                                                                                                <input
+                                                                                                    className="w-full mt-1 bg-black/30 border border-slate-700 rounded p-2 text-xs font-mono text-slate-200 focus:border-cyan-500 outline-none"
+                                                                                                    value={typeof action[f.key] === 'string' ? action[f.key] : ''}
+                                                                                                    placeholder={f.placeholder}
+                                                                                                    onChange={e => setActionField(idx, ai, f.key, e.target.value)}
+                                                                                                />
+                                                                                            </>
+                                                                                        )}
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                        </>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Description (Optional)</label>
+                                                    <textarea
+                                                        className="w-full mt-1 bg-black/20 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-300 focus:border-slate-500 outline-none resize-y h-20"
+                                                        value={step.description || ''}
+                                                        onChange={e => handleStepChange(idx, 'description', e.target.value)}
+                                                        placeholder="Shown when somebody hovers the button."
+                                                    />
+                                                </div>
+                                            </div>
+                                        ) : step.type === 'approval' ? (
                                             <div className="pl-6 py-2">
                                                 <div className="flex items-center gap-3">
                                                     <div className="w-10 h-10 rounded-lg bg-yellow-900/20 flex items-center justify-center text-yellow-500 border border-yellow-700/50">
@@ -698,6 +912,15 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                     >
                                         <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:bg-yellow-500/20 transition-colors">
                                             <CheckCircle2 className="w-4 h-4" />
+                                        </div>
+                                        <span className="font-bold">Add Approval Gate</span>
+                                    </button>
+                                    <button
+                                        onClick={() => addStep('action')}
+                                        className="border border-dashed border-slate-700 rounded-xl p-4 flex items-center justify-center gap-2 text-slate-400 hover:border-cyan-500 hover:text-cyan-500 hover:bg-cyan-500/5 transition-all group"
+                                    >
+                                        <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:bg-cyan-500/20 transition-colors">
+                                            <Zap className="w-4 h-4" />
                                         </div>
                                         <span className="font-bold">Add Approval Gate</span>
                                     </button>

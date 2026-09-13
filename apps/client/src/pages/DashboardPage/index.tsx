@@ -12,7 +12,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw, Zap } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -71,6 +71,17 @@ export interface BuildHistoryEntry {
         duration?: number;
         description?: string;
         continueOnError?: boolean;  // For status display logic
+        /** For type 'action': what pressing the button will do, in order. */
+        actions?: { do: string; [key: string]: unknown }[];
+        /**
+         * For type 'action': ask before doing it.
+         *
+         * Two shapes, chosen per button. A read-only or easily undone action
+         * wants one press. "Merge to main and deploy production" wants to be
+         * asked, in the same words the approval gate uses, because the cost of
+         * a mis-click is a release.
+         */
+        confirm?: boolean;
         /** Median of recent successful runs, ms. Absent until there is history. */
         estimatedDuration?: number;
         /** Epoch ms this run started the step. */
@@ -258,6 +269,8 @@ const DashboardPage: React.FC = () => {
     const [logsExpanded, setLogsExpanded] = useState(false);
     /** Which build is mid-rollback, so its button alone shows it. */
     const [rollingBack, setRollingBack] = useState<string | null>(null);
+    /** Which anytime action is in flight, as "<buildId>:<stepName>". */
+    const [actionBusy, setActionBusy] = useState<string | null>(null);
     const { token } = useAuth();
     const [logFilter, setLogFilter] = useState("");
     // What to open, not just which pipeline: the Logs button needs a tab and a
@@ -328,6 +341,60 @@ const DashboardPage: React.FC = () => {
      * traffic, and the tag it will pin is named in the question so the answer
      * is to a specific thing rather than to the word "rollback".
      */
+    /**
+     * Press an anytime action.
+     *
+     * The chain stops at the first failure server-side, and the response lists
+     * what every attempted action did - so a half-completed chain reports
+     * "merged, then could not start the deploy" rather than one word. That
+     * distinction is the whole reason the outcomes come back at all.
+     */
+    const runAction = async (
+        build: BuildHistoryEntry,
+        stepName: string,
+        needsConfirm: boolean,
+        summary: string
+    ) => {
+        if (needsConfirm) {
+            const ok = await confirm({
+                title: stepName,
+                message: `This will ${summary}. Continue?`,
+                confirmText: "Do it",
+            });
+            if (!ok) return;
+        }
+        setActionBusy(`${build.id}:${stepName}`);
+        try {
+            const res = await fetch(`${API_URL}/api/builds/${build.id}/action`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ step: stepName }),
+            });
+            const body = await res.json().catch(() => ({}));
+            const outcomes: { action: string; ok: boolean; message: string }[] = body.outcomes ?? [];
+            const done = outcomes.filter(o => o.ok).map(o => o.action).join(", ");
+            const failed = outcomes.find(o => !o.ok);
+
+            if (res.ok && !failed) {
+                toast.success(`${stepName}: ${done || "done"}`);
+            } else if (failed) {
+                // Name what DID happen before what did not. A chain that merged
+                // and then failed has changed something, and a message that
+                // only says "failed" hides that.
+                toast.error(
+                    `${stepName}: ${done ? `${done}, then ` : ""}${failed.action} failed - ${failed.message}`
+                );
+            } else {
+                toast.error(`${stepName}: ${body.error ?? "failed"}`);
+            }
+            fetchBuildHistory();
+        } catch (e) {
+            toast.error(`${stepName}: ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+            setActionBusy(null);
+        }
+    };
+
     const rollbackTo = async (build: BuildHistoryEntry) => {
         const targets = (build.artifacts ?? []).filter(a => a.rollbackable);
         const tags = [...new Set(targets.map(a => a.tag).filter(Boolean))];
@@ -1394,6 +1461,36 @@ const DashboardPage: React.FC = () => {
                                                 </div>
                                             ))}
                                         </div>
+
+                                        {/* ANYTIME ACTIONS, shown as buttons rather than status cards.
+                                            They are not part of the run - they sit on a finished build
+                                            and wait - so drawing them in the sequence beside steps that
+                                            succeeded would say they were skipped, which is not what
+                                            happened to them. */}
+                                        {build.steps.some(s => s.type === 'action') && (
+                                            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-800">
+                                                {build.steps.filter(s => s.type === 'action').map(step => {
+                                                    const chain = step.actions ?? [];
+                                                    const summary = chain.map(a => String(a.do)).join(' then ') || 'nothing configured';
+                                                    const running = actionBusy === `${build.id}:${step.name}`;
+                                                    return (
+                                                        <button
+                                                            key={step.name}
+                                                            disabled={running || chain.length === 0}
+                                                            onClick={() => runAction(build, step.name, step.confirm === true, summary)}
+                                                            title={`${summary}${step.description ? `\n\n${step.description}` : ''}`}
+                                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wide border transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-cyan-600/15 hover:bg-cyan-600/30 text-cyan-300 border-cyan-500/40"
+                                                        >
+                                                            {running
+                                                                ? <Loader className="w-3 h-3 animate-spin" />
+                                                                : <Zap className="w-3 h-3" />}
+                                                            {step.name}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
                                         <RunProvenance
                                             build={build}
                                             onRollback={rollbackTo}

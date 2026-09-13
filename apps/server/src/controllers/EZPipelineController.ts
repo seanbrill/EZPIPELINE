@@ -26,6 +26,13 @@ export interface EZPIPELINEYAML {
 export interface Step {
   name: string;
   run: string;
+  /**
+   * For `type: action`. The chain this button runs, in order, stopping at the
+   * first failure. See services/ActionRunner.ts.
+   */
+  actions?: { do: string; [key: string]: unknown }[];
+  /** For `type: action`: ask before running the chain. */
+  confirm?: boolean;
   cwd?: string;
   env?: Record<string, string>;
   continueOnError?: boolean;
@@ -46,6 +53,13 @@ export interface BuildStepHistory {
    * production" could not be released from the UI at all.
    */
   type?: string;
+  /**
+   * For `type: action`: what pressing the button will do, in order. Sent so
+   * the dashboard can name the chain before anybody presses it.
+   */
+  actions?: { do: string; [key: string]: unknown }[];
+  /** For `type: action`: whether the UI asks before running the chain. */
+  confirm?: boolean;
   status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
   startTime?: Date;
   endTime?: Date;
@@ -243,6 +257,11 @@ export default class EZPipelineController extends EventEmitter {
             // Sending it costs one field and removes a heuristic that was
             // always going to fail on somebody's wording.
             type: s.type,
+            // The chain, so the dashboard can name what a button will do
+            // before somebody presses it. Values only; nothing here is secret
+            // that the pipeline yaml does not already show.
+            actions: s.actions,
+            confirm: s.confirm,
             status: stepStatus,
             duration: stepDuration,
             // What this step usually takes, and when this run started it. The
@@ -1200,6 +1219,25 @@ export default class EZPipelineController extends EventEmitter {
           CI: 'true',                         // Many tools check this for headless mode
           TERM: 'dumb',                       // Disable fancy terminal features
         };
+
+        // ANYTIME ACTIONS ARE NOT PART OF THE RUN.
+        //
+        // An `action` step is a button that sits on the build and waits to be
+        // pressed, usually long after the pipeline has finished. Running it
+        // here would defeat the entire point, and PAUSING here would be worse:
+        // the run would stop at a step nobody intended as a gate.
+        //
+        // So it is stepped over, and the timing row is marked skipped rather
+        // than left pending, because a step that shows "pending" on a finished
+        // build reads as one that never got its turn.
+        if (currentStep.type === 'action') {
+          buildLogger.info(`⏭️ '${currentStep.name}' is an anytime action; it runs when somebody presses it`);
+          if (build.stepTimings && build.stepTimings[currentStep.name]) {
+            build.stepTimings[currentStep.name].status = 'skipped';
+            this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
+          }
+          continue;
+        }
 
         // Check for special step types
         if (currentStep.type === 'approval') {
