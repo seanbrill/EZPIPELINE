@@ -82,6 +82,16 @@ export interface BuildHistoryEntry {
          * a mis-click is a release.
          */
         confirm?: boolean;
+        /**
+         * For type 'action': stay disabled until every step ABOVE it has
+         * succeeded.
+         *
+         * Position-relative rather than "wait for the whole pipeline", which
+         * is the same thing for a button at the end and a different, useful
+         * thing anywhere else. Everything needed to evaluate it is already
+         * here: the step list is ordered and each entry carries a status.
+         */
+        requirePriorSteps?: boolean;
         /** Median of recent successful runs, ms. Absent until there is history. */
         estimatedDuration?: number;
         /** Epoch ms this run started the step. */
@@ -1403,7 +1413,12 @@ const DashboardPage: React.FC = () => {
                                                                                     ? <span className="text-slate-600"> / ~{formatDurationCompact(step.estimatedDuration)}</span>
                                                                                     : null}
                                                                             </>
-                                                                            : step.status === 'running' ? '...' : '--'}
+                                                                            // AN ACTION NEVER RAN, so it has no
+                                                                            // duration to withhold and "--" reads as a
+                                                                            // step that was skipped. It says what it IS:
+                                                                            // a button that waits on a finished build.
+                                                                            : step.type === 'action' ? 'on demand'
+                                                                                : step.status === 'running' ? '...' : '--'}
                                                                 </div>
 
                                                                 <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
@@ -1458,38 +1473,77 @@ const DashboardPage: React.FC = () => {
                                                             </button>
                                                         </div>
                                                     )}
+
+                                                    {/* ANYTIME ACTION - the button lives on ITS OWN STEP,
+                                                        exactly like the Approve one above. It used to sit
+                                                        in a bar below the grid while the step ALSO drew a
+                                                        card showing a duration of "--", so one action
+                                                        appeared twice and neither instance looked like a
+                                                        control that belonged to a step.
+
+                                                        Green, because that is already the house colour for
+                                                        "a control that releases something" - the gate above
+                                                        uses it and this does the same job one stage later. */}
+                                                    {step.type === 'action' && (() => {
+                                                        const chain = step.actions ?? [];
+                                                        const summary = chain.map(a => String(a.do)).join(' then ') || 'nothing configured';
+                                                        const running = actionBusy === `${build.id}:${step.name}`;
+                                                        // EVERY STEP ABOVE THIS ONE, not "the pipeline
+                                                        // finished". Same thing for a button at the end and
+                                                        // a different, useful thing anywhere else.
+                                                        const before = build.steps.slice(0, idx);
+                                                        const waitingOn = step.requirePriorSteps
+                                                            ? before.find(x => x.status !== 'success')
+                                                            : undefined;
+                                                        const blocked = !!waitingOn;
+                                                        return (
+                                                            <div className="mt-3">
+                                                                <button
+                                                                    disabled={running || blocked || chain.length === 0}
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        runAction(build, step.name, step.confirm === true, summary);
+                                                                    }}
+                                                                    // A DISABLED BUTTON HAS TO SAY WHY. "Promote to
+                                                                    // production" greyed out and silent is
+                                                                    // indistinguishable from broken, which is the
+                                                                    // failure this feature would otherwise ship.
+                                                                    title={blocked
+                                                                        ? `Waiting on "${waitingOn!.name}" to finish`
+                                                                        : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
+                                                                    className="w-full bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/50 px-2 py-1 text-[10px] uppercase tracking-wide rounded font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600/20"
+                                                                >
+                                                                    {running
+                                                                        ? <Loader className="w-3 h-3 animate-spin" />
+                                                                        : <Zap className="w-3 h-3" />}
+                                                                    {blocked ? 'Waiting' : step.name}
+                                                                </button>
+                                                                {blocked && (
+                                                                    <p className="mt-1 text-[9px] leading-tight text-slate-500 text-center">
+                                                                        after &ldquo;{waitingOn!.name}&rdquo;
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })()}
                                                 </div>
                                             ))}
                                         </div>
 
-                                        {/* ANYTIME ACTIONS, shown as buttons rather than status cards.
-                                            They are not part of the run - they sit on a finished build
-                                            and wait - so drawing them in the sequence beside steps that
-                                            succeeded would say they were skipped, which is not what
-                                            happened to them. */}
-                                        {build.steps.some(s => s.type === 'action') && (
-                                            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-800">
-                                                {build.steps.filter(s => s.type === 'action').map(step => {
-                                                    const chain = step.actions ?? [];
-                                                    const summary = chain.map(a => String(a.do)).join(' then ') || 'nothing configured';
-                                                    const running = actionBusy === `${build.id}:${step.name}`;
-                                                    return (
-                                                        <button
-                                                            key={step.name}
-                                                            disabled={running || chain.length === 0}
-                                                            onClick={() => runAction(build, step.name, step.confirm === true, summary)}
-                                                            title={`${summary}${step.description ? `\n\n${step.description}` : ''}`}
-                                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wide border transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-cyan-600/15 hover:bg-cyan-600/30 text-cyan-300 border-cyan-500/40"
-                                                        >
-                                                            {running
-                                                                ? <Loader className="w-3 h-3 animate-spin" />
-                                                                : <Zap className="w-3 h-3" />}
-                                                            {step.name}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
+                                        {/* The anytime-action buttons USED TO BE HERE, in a bar
+                                            below the grid, and they are now drawn inside their
+                                            own step card - see the button beside the Approve
+                                            one above.
+
+                                            The old comment argued the bar was right because an
+                                            action "is not part of the run, so drawing it beside
+                                            steps that succeeded would say it was skipped". That
+                                            is true of a step CARD pretending to have run, and
+                                            the answer is to fix the card rather than to draw the
+                                            control twice: the action appeared once in the grid
+                                            showing a duration of "--" AND again as a button
+                                            underneath. One control, in the place the action
+                                            is. */}
 
                                         <RunProvenance
                                             build={build}

@@ -33,6 +33,16 @@ export interface Step {
   actions?: { do: string; [key: string]: unknown }[];
   /** For `type: action`: ask before running the chain. */
   confirm?: boolean;
+  /**
+   * For `type: action`: stay disabled until every step ABOVE it has succeeded.
+   *
+   * Position-relative rather than "wait for the whole pipeline", which is the
+   * same thing for a button at the end and a different, useful thing anywhere
+   * else. A promote button after the smoke check means "the deploy worked";
+   * the same flag on an action placed halfway means "the part before me
+   * worked", and the config does not change to say it.
+   */
+  requirePriorSteps?: boolean;
   cwd?: string;
   env?: Record<string, string>;
   continueOnError?: boolean;
@@ -60,6 +70,12 @@ export interface BuildStepHistory {
   actions?: { do: string; [key: string]: unknown }[];
   /** For `type: action`: whether the UI asks before running the chain. */
   confirm?: boolean;
+  /**
+   * For `type: action`: whether the button stays disabled until every step
+   * ABOVE it has succeeded. The client holds the ordered step list and each
+   * step's status, so it needs nothing else to work this out.
+   */
+  requirePriorSteps?: boolean;
   status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
   startTime?: Date;
   endTime?: Date;
@@ -262,6 +278,7 @@ export default class EZPipelineController extends EventEmitter {
             // that the pipeline yaml does not already show.
             actions: s.actions,
             confirm: s.confirm,
+            requirePriorSteps: s.requirePriorSteps,
             status: stepStatus,
             duration: stepDuration,
             // What this step usually takes, and when this run started it. The

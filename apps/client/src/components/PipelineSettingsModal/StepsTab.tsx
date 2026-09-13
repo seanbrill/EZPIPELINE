@@ -111,7 +111,7 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                 // Starts with one action and confirmation ON. A button that
                 // does something the moment it is created, before anybody has
                 // said what it does, is the wrong default.
-                ? { name: 'Promote', type: 'action', confirm: true, actions: [{ do: 'run-pipeline' }] }
+                ? { name: 'Promote', type: 'action', confirm: true, requirePriorSteps: true, actions: [{ do: 'run-pipeline' }] }
                 : { name: 'New Step', run: 'echo "hello"', continueOnError: false, shell: 'bash' };
 
         const newSteps = [...currentSteps, newStep];
@@ -763,6 +763,29 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                                                 Ask before running
                                                                 <span className="block text-[10px] text-slate-500">
                                                                     Off means one press does it. On means a confirmation first.
+                                                                </span>
+                                                            </span>
+                                                        </label>
+                                                    </div>
+                                                    <div className="col-span-12 pb-1">
+                                                        <label className="flex items-start gap-2 cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={step.requirePriorSteps === true}
+                                                                onChange={e => handleStepChange(idx, 'requirePriorSteps', e.target.checked)}
+                                                                className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-black/20 text-emerald-500"
+                                                            />
+                                                            <span className="text-xs text-slate-300">
+                                                                Wait for the steps above this one
+                                                                {/* POSITION-RELATIVE, not "the pipeline finished".
+                                                                    For a button at the end those are the same
+                                                                    sentence; anywhere else they are not, and this
+                                                                    one keeps meaning what it says when the step
+                                                                    is dragged somewhere new. */}
+                                                                <span className="block text-[10px] text-slate-500">
+                                                                    The button stays disabled until every step above it has
+                                                                    succeeded, and says which one it is waiting on. Drag this
+                                                                    step and the condition moves with it.
                                                                 </span>
                                                             </span>
                                                         </label>
