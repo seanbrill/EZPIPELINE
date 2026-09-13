@@ -137,7 +137,23 @@ async function mergeBranch(action: PipelineAction, ctx: ActionContext): Promise<
     try {
         await gitWith(cred, ["init", "--quiet", dir]);
         await gitWith(cred, ["-C", dir, "remote", "add", "origin", repo]);
-        await gitWith(cred, ["-C", dir, "fetch", "--quiet", "--depth", "1", "origin", from]);
+        // FULL HISTORY, AND BOTH REFS. `--depth 1` was here as a speed
+        // optimisation and it broke the operation it was optimising.
+        //
+        // A depth-1 fetch leaves a repository holding ONE commit with no
+        // ancestry, so when the push arrives the server cannot prove the
+        // target is an ancestor of it - and rejects the whole thing as a
+        // non-fast-forward. Reproduced both ways against the real remote:
+        // shallow gives "! [rejected] FETCH_HEAD -> main (fetch first)", full
+        // gives "580e2dc..477e84c FETCH_HEAD -> main".
+        //
+        // It was saving nothing anyway. The full fetch of that repository
+        // takes two seconds.
+        //
+        // `into` is fetched as well so the local repository can answer "is
+        // this actually a divergence" below, rather than guessing from the
+        // word "rejected".
+        await gitWith(cred, ["-C", dir, "fetch", "--quiet", "origin", from, into]);
         // FETCH_HEAD is the tip of `from`. Pushing it at `into` without --force
         // is the fast-forward check.
         const { stdout } = await gitWith(cred, [
@@ -166,11 +182,37 @@ async function mergeBranch(action: PipelineAction, ctx: ActionContext): Promise<
                 `question without needing a deploy to find out.`
             );
         }
-        // The failure worth naming, because it is the one that will happen.
+        // A REJECTION IS NOT A DIAGNOSIS, and treating it as one is how this
+        // message sent somebody looking for a divergence that did not exist.
+        // It claimed "main has commits that develop does not" when main was
+        // zero commits ahead; the real cause was the shallow fetch above.
+        //
+        // So the branch is ASKED rather than assumed. `git merge-base
+        // --is-ancestor into from` answers exactly the question the message
+        // was guessing at, and the guess is only made when the answer says so.
         if (/non-fast-forward|rejected/i.test(detail)) {
+            let diverged = true;
+            try {
+                await gitWith(cred, [
+                    "-C", dir, "merge-base", "--is-ancestor",
+                    `origin/${into}`, "FETCH_HEAD",
+                ]);
+                // Exit 0: `into` IS an ancestor, so a fast-forward was
+                // possible and something else refused it.
+                diverged = false;
+            } catch {
+                /* non-zero: genuinely diverged, which is what we assumed */
+            }
+            if (diverged) {
+                throw new Error(
+                    `${into} has commits that ${from} does not, so this cannot fast-forward. ` +
+                    `Merge them the other way first. Git said: ${detail}`
+                );
+            }
             throw new Error(
-                `${into} has commits that ${from} does not, so this cannot fast-forward. ` +
-                `Merge them the other way first. Git said: ${detail}`
+                `${into} is an ancestor of ${from}, so this SHOULD have fast-forwarded and ` +
+                `the remote refused it anyway. That usually means a branch protection rule ` +
+                `on ${into}, or a credential without permission to push to it. Git said: ${detail}`
             );
         }
         throw new Error(detail);
