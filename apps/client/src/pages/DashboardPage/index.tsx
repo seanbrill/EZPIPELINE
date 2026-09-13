@@ -199,13 +199,64 @@ function RunProvenance({
     );
 }
 
+/**
+ * What the dashboard was looking at, so a refresh does not throw it away.
+ *
+ * Every reload dropped you back to "all groups, no pipeline picked", which on
+ * an instance with more than one project means re-navigating before you can
+ * see the thing you were already watching - and a refresh is the ordinary way
+ * to check on a running build.
+ *
+ * Per browser, not per account: it is a view preference, not data. Nothing
+ * here is authoritative, and everything read back out is checked against what
+ * actually exists before it is used. See restoreIfStillThere.
+ */
+const SELECTION_KEY = 'ezpipeline.dashboard.selection';
+
+interface StoredSelection {
+    /** Group path. Absent or empty means "all groups", which is the default. */
+    group?: string;
+    /** Pipeline id for the Quick Run picker. */
+    pipeline?: string;
+}
+
+function readSelection(): StoredSelection {
+    try {
+        const raw = localStorage.getItem(SELECTION_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed as StoredSelection : {};
+    } catch {
+        // Unavailable in a private window, or holding something that is no
+        // longer JSON. Neither is worth failing a dashboard over.
+        return {};
+    }
+}
+
+function writeSelection(next: StoredSelection) {
+    try {
+        localStorage.setItem(SELECTION_KEY, JSON.stringify(next));
+    } catch {
+        // Blocked site data. A remembered tab is not worth an exception on
+        // every selection change.
+    }
+}
+
 const DashboardPage: React.FC = () => {
     const [pipelines, setPipelines] = useState<Pipeline[]>([]);
     const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
-    const [selectedGroup, setSelectedGroup] = useState<string | undefined>(undefined);
+    // Restored from the last visit, then VALIDATED once the real lists arrive -
+    // see the setAllGroups and setPipelines calls. A remembered group that has
+    // since been deleted or renamed would otherwise filter everything away and
+    // leave an empty dashboard with nothing on screen to explain it.
+    const [selectedGroup, setSelectedGroup] = useState<string | undefined>(
+        () => readSelection().group || undefined
+    );
     const [configuringGroup, setConfiguringGroup] = useState<string | undefined>(undefined);
-    const [selectedPipelineForRun, setSelectedPipelineForRun] = useState<string>('');
+    const [selectedPipelineForRun, setSelectedPipelineForRun] = useState<string>(
+        () => readSelection().pipeline || ''
+    );
     const [logsExpanded, setLogsExpanded] = useState(false);
     /** Which build is mid-rollback, so its button alone shows it. */
     const [rollingBack, setRollingBack] = useState<string | null>(null);
@@ -235,6 +286,15 @@ const DashboardPage: React.FC = () => {
             });
             const data = await response.json();
             setPipelines(data.targets || []);
+
+            // Same rule as the remembered group: a remembered pipeline that is
+            // gone must not stay in the picker. It would show an id where a
+            // name belongs and arm a Run button pointed at nothing.
+            setSelectedPipelineForRun(previous => {
+                if (!previous) return previous;
+                const stillThere = (data.targets || []).some((p: Pipeline) => p.id === previous);
+                return stillThere ? previous : '';
+            });
 
             // Extract unique groups
             const uniqueGroups = Array.from(new Set((data.targets || []).map((p: Pipeline) => p.group).filter(Boolean)));
@@ -516,6 +576,35 @@ const DashboardPage: React.FC = () => {
 
 
             setAllGroups(folders);
+
+            // A REMEMBERED GROUP THAT NO LONGER EXISTS IS WORSE THAN NONE.
+            //
+            // It filters every pipeline away, so the dashboard comes up empty
+            // with nothing on screen saying why - and the cause is a group
+            // deleted or renamed in a session the reader may not have been
+            // part of. Checked here, where the authoritative list has just
+            // arrived, rather than in an effect that would also fire on the
+            // empty set before the first fetch and clear a valid choice.
+            //
+            // EXACT, or a group filed BENEATH it. Not "a parent of it exists".
+            //
+            // The first version of this also accepted `previous.startsWith(g)`,
+            // reasoning that a parent still being there made the selection
+            // valid. It does the opposite: "Notch.fm/Gone" passes on the
+            // strength of "Notch.fm", so a deleted subgroup is remembered
+            // forever and the dashboard stays empty. Tried it against the real
+            // group list; it kept two of the three deleted cases.
+            //
+            // The descendant clause is kept because a group can exist only
+            // implicitly: a pipeline filed at "A/B" puts "A/B" in this set
+            // without "A" ever being a directory of its own.
+            setSelectedGroup(previous => {
+                if (!previous) return previous;
+                const stillThere = Array.from(folders).some(
+                    g => g === previous || g.startsWith(previous + '/')
+                );
+                return stillThere ? previous : undefined;
+            });
         } catch (e) {
             console.error("Failed to fetch groups", e);
         }
@@ -525,6 +614,13 @@ const DashboardPage: React.FC = () => {
         if (!token) return;
         fetchGroups();
     }, [pipelines, token]);
+
+    // Write the selection back on every change, including the ones made by the
+    // validation above - so a group that has been deleted is forgotten rather
+    // than cleared on screen and restored again on the next refresh.
+    useEffect(() => {
+        writeSelection({ group: selectedGroup, pipeline: selectedPipelineForRun });
+    }, [selectedGroup, selectedPipelineForRun]);
 
     const createGroup = async (parentPath?: string) => {
         setGroupParentPath(parentPath);
