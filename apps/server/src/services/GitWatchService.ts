@@ -177,6 +177,28 @@ export class GitWatchService {
         // commit: last_sha stays where it was and the next tick sees the head
         // as new again. It will then deploy whatever is newest, which is what
         // somebody pushing three times in a row wanted anyway.
+        // A PAUSED BUILD IS SUPERSEDED, NOT RESPECTED.
+        //
+        // A build sitting at an approval gate is waiting for somebody to
+        // release a commit the branch has already moved past. Nobody wants to
+        // approve it: doing so deploys code that is no longer current.
+        //
+        // And because "paused" counts as in flight below, leaving it there does
+        // not merely delay this push. It blocks EVERY later one, silently,
+        // until a person notices the gate - so one unapproved run quietly turns
+        // an auto-deploy off.
+        //
+        // The newer commit therefore wins. Aborting the stale run frees the
+        // workspace and this tick carries on. A build that is genuinely RUNNING
+        // is left alone: that is work in progress, not a decision nobody made.
+        const superseded = this.abortSupersededPaused(w.pipeline_target, sha);
+        if (superseded > 0) {
+            this.logger.info(
+                `Git watch ${w.id}: aborted ${superseded} paused build(s) of ${w.pipeline_target}, ` +
+                `superseded by ${sha.slice(0, 12)}.`
+            );
+        }
+
         if (this.isBuilding(w.pipeline_target)) {
             this.logger.info(
                 `Git watch ${w.id}: ${w.branch} moved to ${sha.slice(0, 12)}, but a build of ` +
@@ -231,6 +253,47 @@ export class GitWatchService {
      * workspace, and starting a second one would delete the tree the first is
      * going to come back to.
      */
+    /**
+     * Abort paused builds of this pipeline that a newer commit has overtaken.
+     *
+     * ONLY 'paused', never 'running'. A paused build is parked at an approval
+     * gate, so nothing is in flight and nothing is lost by ending it - the
+     * commit it was waiting to release has been replaced. A running build is
+     * doing work somebody is waiting on, and killing that to start again would
+     * make a busy branch never finish a deploy at all.
+     *
+     * Marked aborted directly rather than through the controller, because the
+     * runner is not executing anything for a paused build: it returned at the
+     * gate and is waiting to be resumed by approveBuild. There is no child
+     * process to signal, only a row that will otherwise sit there forever.
+     *
+     * Returns how many were ended, so the caller can say so. Failures are
+     * logged and swallowed: this is housekeeping in front of a deploy, and a
+     * housekeeping fault must not stop the deploy.
+     */
+    private abortSupersededPaused(pipelineTarget: string, bySha: string): number {
+        try {
+            const info = this.db
+                .getDb()
+                .prepare(
+                    `UPDATE builds
+                        SET status = 'aborted',
+                            ended_at = ?,
+                            error = ?
+                      WHERE target = ? AND status = 'paused'`
+                )
+                .run(
+                    new Date().toISOString(),
+                    `superseded: ${bySha.slice(0, 12)} was pushed while this build waited for approval`,
+                    pipelineTarget
+                );
+            return info.changes ?? 0;
+        } catch (e) {
+            this.logger.warn(`Git watch could not abort superseded paused builds: ${e}`);
+            return 0;
+        }
+    }
+
     private isBuilding(pipelineTarget: string): boolean {
         try {
             const row = this.db
