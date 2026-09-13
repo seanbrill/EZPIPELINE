@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration } from '../../helpers/formatDuration';
+import { readJSON, writeJSON } from '../../helpers/persistedState';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
 import FileTreeSidebar from '../../components/FileTreeSidebar';
 import CreatePipelineModal from '../../components/CreatePipelineModal';
@@ -221,26 +222,18 @@ interface StoredSelection {
 }
 
 function readSelection(): StoredSelection {
-    try {
-        const raw = localStorage.getItem(SELECTION_KEY);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed as StoredSelection : {};
-    } catch {
-        // Unavailable in a private window, or holding something that is no
-        // longer JSON. Neither is worth failing a dashboard over.
-        return {};
-    }
+    const parsed = readJSON<StoredSelection>(SELECTION_KEY, {});
+    // readJSON guarantees only that it parsed, not that it is the right shape:
+    // an older version of this key could have held a string.
+    return parsed && typeof parsed === 'object' ? parsed : {};
 }
 
 function writeSelection(next: StoredSelection) {
-    try {
-        localStorage.setItem(SELECTION_KEY, JSON.stringify(next));
-    } catch {
-        // Blocked site data. A remembered tab is not worth an exception on
-        // every selection change.
-    }
+    writeJSON(SELECTION_KEY, next);
 }
+
+/** Whether the sidebar was collapsed. Same reasoning as the selection. */
+const SIDEBAR_KEY = 'ezpipeline.sidebar.collapsed';
 
 const DashboardPage: React.FC = () => {
     const [pipelines, setPipelines] = useState<Pipeline[]>([]);
@@ -266,7 +259,9 @@ const DashboardPage: React.FC = () => {
     // build id to land on.
     type ModalTarget = { pipeline: Pipeline; tab?: 'steps' | 'environment' | 'resources' | 'schedule' | 'history' | 'versions'; buildId?: string };
     const [activePipeline, setActivePipeline] = useState<ModalTarget | null>(null);
-    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(
+        () => readJSON<boolean>(SIDEBAR_KEY, false)
+    );
     const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
     const [newGroupName, setNewGroupName] = useState("");
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -621,6 +616,10 @@ const DashboardPage: React.FC = () => {
     useEffect(() => {
         writeSelection({ group: selectedGroup, pipeline: selectedPipelineForRun });
     }, [selectedGroup, selectedPipelineForRun]);
+
+    useEffect(() => {
+        writeJSON(SIDEBAR_KEY, sidebarCollapsed);
+    }, [sidebarCollapsed]);
 
     const createGroup = async (parentPath?: string) => {
         setGroupParentPath(parentPath);

@@ -1,7 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, FolderPlus, Edit2, Box, Search } from 'lucide-react';
 import { usePreferences } from '../../contexts/PreferencesContext';
 import { TAG_COLORS } from '../../constants/tagColors';
+import { readJSON, writeJSON } from '../../helpers/persistedState';
+
+/** Which folders were open, per browser. A view preference, not data. */
+const EXPANDED_KEY = 'ezpipeline.sidebar.expanded';
 
 interface FileTreeNode {
     name: string;
@@ -41,9 +45,40 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
     className
 }) => {
     const { envTagColors, envTagLabels } = usePreferences();
-    const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    // The tree used to collapse on every refresh, so checking on a build meant
+    // re-opening the same two folders each time. A Set does not survive JSON,
+    // so it is stored as an array and rebuilt here.
+    const [expanded, setExpanded] = useState<Set<string>>(
+        () => new Set(readJSON<string[]>(EXPANDED_KEY, []))
+    );
     const [searchQuery, setSearchQuery] = useState('');
     const [filterEnv, setFilterEnv] = useState<string>('all');
+
+    useEffect(() => {
+        writeJSON(EXPANDED_KEY, Array.from(expanded));
+    }, [expanded]);
+
+    // FORGET FOLDERS THAT ARE GONE, so the store does not grow for the life of
+    // the browser as groups are renamed. A stale entry is harmless on its own -
+    // nothing renders a path that is not in the tree - which is exactly why it
+    // would otherwise never be noticed or cleaned up.
+    //
+    // Only when the tree has actually arrived. Pruning against the empty array
+    // of the first render would wipe the very state just restored, which is
+    // the bug this whole change exists to fix.
+    useEffect(() => {
+        if (fileTree.length === 0) return;
+        const live = new Set<string>();
+        const walk = (nodes: FileTreeNode[]) => nodes.forEach(n => {
+            live.add(n.path);
+            if (n.children) walk(n.children);
+        });
+        walk(fileTree);
+        setExpanded(previous => {
+            const kept = Array.from(previous).filter(p => live.has(p));
+            return kept.length === previous.size ? previous : new Set(kept);
+        });
+    }, [fileTree]);
 
     // Get all unique environments derived from preferences or existing nodes
     const environmentOptions = useMemo(() => {
