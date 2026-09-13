@@ -993,7 +993,7 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                     </div>
                                 ))}
 
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                     <button
                                         onClick={() => addStep('shell')}
                                         className="border border-dashed border-slate-700 rounded-xl p-4 flex items-center justify-center gap-2 text-slate-400 hover:border-emerald-500 hover:text-emerald-500 hover:bg-emerald-500/5 transition-all group"
@@ -1019,7 +1019,7 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                         <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center group-hover:bg-cyan-500/20 transition-colors">
                                             <Zap className="w-4 h-4" />
                                         </div>
-                                        <span className="font-bold">Add Approval Gate</span>
+                                        <span className="font-bold">Add Anytime Action</span>
                                     </button>
                                 </div>
                             </div>
