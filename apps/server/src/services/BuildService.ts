@@ -2,6 +2,30 @@ import { DatabaseService } from "./Database.js";
 import { Build } from "../types/other/index.js";
 import { v4 as uuidv4 } from 'uuid';
 
+/**
+ * Which status a write should land, given what the caller passed.
+ *
+ * Pulled out of updateBuild so the rule can be tested. The database path is
+ * resolved at import time in DatabaseService, so exercising updateBuild itself
+ * means opening the REAL builds table, and a test that can corrupt live build
+ * history is worse than no test.
+ *
+ * THE RULE. Outcomes beat states. `error` and `isAborted` describe how a build
+ * ENDED, and a status passed on the same call cannot argue with that. Anything
+ * else defers to what the caller actually said, and only then falls back to
+ * inferring success from a completed percentage.
+ *
+ * Returning undefined means "do not write a status", which is not the same as
+ * writing one and is why this returns a value rather than a string.
+ */
+export function statusToWrite(updates: Record<string, any>): string | undefined {
+    if (updates.error) return 'failed';
+    if (updates.isAborted) return 'aborted';
+    if (updates.status !== undefined) return updates.status;
+    if (updates.percentage && updates.percentage >= 100) return 'success';
+    return undefined;
+}
+
 export class BuildService {
     private static instance: BuildService;
     private db = DatabaseService.getInstance();
@@ -98,14 +122,19 @@ export class BuildService {
             values.push(JSON.stringify((updates as any).stepTimings));
         }
 
-        // Infer status
-        if ((updates as any).error) {
-            fields.push("status = ?"); values.push('failed');
-        } else if (updates.isAborted) {
-            fields.push("status = ?"); values.push('aborted');
-        } else if (updates.percentage && updates.percentage >= 100) {
-            fields.push("status = ?"); values.push('success');
-        }
+        // Status: STATED BEATS INFERRED. See statusToWrite above.
+        //
+        // This used to infer the status and nothing else, so a caller passing
+        // one explicitly had it silently dropped. The approval gate does
+        // exactly that:
+        //
+        //     updateBuild(id, { stepTimings, status: 'paused' })
+        //
+        // and the row stayed 'running'. The runner had genuinely parked and
+        // said so in its log, while every reader of the database - the
+        // dashboard included - was told the build was still working.
+        const status = statusToWrite(updates as Record<string, any>);
+        if (status !== undefined) { fields.push("status = ?"); values.push(status); }
 
         if (fields.length === 0) return;
 

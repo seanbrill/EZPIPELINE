@@ -53,6 +53,16 @@ export interface BuildHistoryEntry {
     duration?: number;
     steps: Array<{
         name: string;
+        /**
+         * What the step IS, as the pipeline declared it. Absent for ordinary
+         * steps; 'approval' marks a gate.
+         *
+         * The Approve button used to be drawn by matching the step's NAME
+         * against "approv" or "gate", because the server did not send this.
+         * A gate named "Authorise the first change to production" matched
+         * neither and could not be released from the UI at all.
+         */
+        type?: string;
         status: 'pending' | 'running' | 'success' | 'failed' | 'error';
         startTime?: string;
         endTime?: string;
@@ -1125,8 +1135,16 @@ const DashboardPage: React.FC = () => {
                                                             }`}></div>
                                                     </div>
 
-                                                    {/* Approval Button - Only for 'approval' steps */}
-                                                    {(build.status === 'paused' || build.status === 'running') && build.activeStep === step.name && (step.name.toLowerCase().includes('approv') || step.name.toLowerCase().includes('gate')) && (
+                                                    {/* Approval Button - Only for 'approval' steps.
+                                                        Decided by the step's declared TYPE, which is
+                                                        what the pipeline actually says. This used to
+                                                        match the NAME against "approv" or "gate", so a
+                                                        gate called "Authorise the first change to
+                                                        production" got no button and a production run
+                                                        could only be released with a curl. 'running' is
+                                                        still accepted alongside 'paused' because a gate
+                                                        is genuinely parked either way. */}
+                                                    {(build.status === 'paused' || build.status === 'running') && build.activeStep === step.name && step.type === 'approval' && (
                                                         <div className="mt-3 flex justify-center">
                                                             <button
                                                                 onClick={async (e) => {

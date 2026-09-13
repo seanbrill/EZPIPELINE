@@ -36,6 +36,16 @@ export interface Step {
 
 export interface BuildStepHistory {
   name: string;
+  /**
+   * What the step IS, carried through from the pipeline definition. Absent
+   * for an ordinary step; 'approval' marks a gate.
+   *
+   * The dashboard needs this to know where to offer an Approve button. Until
+   * it was sent, the client matched the step's NAME against "approv" and
+   * "gate" instead, so a gate called "Authorise the first change to
+   * production" could not be released from the UI at all.
+   */
+  type?: string;
   status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
   startTime?: Date;
   endTime?: Date;
@@ -211,6 +221,18 @@ export default class EZPipelineController extends EventEmitter {
 
           return {
             name: s.name,
+            // WHAT THE STEP IS, not what it is called.
+            //
+            // Without this the client could not tell an approval gate from any
+            // other step, so it guessed from the name: it drew the Approve
+            // button when the name contained "approv" or "gate". A gate called
+            // "Authorise the first change to production" matched neither, and
+            // a production run sat paused with no way to release it.
+            //
+            // The pipeline declares `type: approval` right there in the YAML.
+            // Sending it costs one field and removes a heuristic that was
+            // always going to fail on somebody's wording.
+            type: s.type,
             status: stepStatus,
             duration: stepDuration
           };
