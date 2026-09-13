@@ -847,6 +847,21 @@ const DashboardPage: React.FC = () => {
         }
     };
 
+    /**
+     * Clicking a pipeline in the tree ARMS IT, it does not open the editor.
+     *
+     * It used to throw the settings modal over the whole dashboard, so the
+     * common act of picking which pipeline to look at cost a modal and a
+     * dismissal, and browsing the tree meant opening and closing the YAML
+     * editor repeatedly. Editing is the rarer intent and has its own button on
+     * every run row.
+     *
+     * Selecting the group as well is the part that makes this work rather than
+     * merely look like it works: the Quick Run picker is fed from the pipelines
+     * in the CURRENT group, so arming one filed somewhere else would set a
+     * value the picker cannot display - a Run button pointed at a name nobody
+     * can see.
+     */
     const handleSelectPipeline = (path: string) => {
         const found = pipelines.find(p => {
             if (!p.filePath) return false;
@@ -854,10 +869,10 @@ const DashboardPage: React.FC = () => {
             // Path: Testing/test
             return p.filePath.endsWith(`${path}/pipeline.yaml`);
         });
+        if (!found) return;
 
-        if (found) {
-            setActivePipeline({ pipeline: found });
-        }
+        if (!inSelectedGroup(found.group)) setSelectedGroup(found.group || undefined);
+        setSelectedPipelineForRun(found.id);
     };
 
     const groupsList = Array.from(allGroups).sort();
@@ -1216,7 +1231,13 @@ const DashboardPage: React.FC = () => {
                                     <div className="p-4 bg-slate-900/30">
                                         <div className="flex flex-wrap gap-2">
                                             {build.steps.map((step, idx) => (
-                                                <div key={idx} title={step.description} className={`flex-1 min-w-[120px] rounded-lg p-3 border transition-colors flex flex-col ${step.status === 'running' ? 'bg-slate-900 border-blue-500/50 shadow-sm shadow-blue-500/10' :
+                                                // min-h so a card is not as short as its own text. Step
+                                                // names here run to four or five wrapped lines - "Is this
+                                                // pipeline running its own current definition" - and the
+                                                // duration and bar are pinned to the bottom with mt-auto,
+                                                // so a short name used to give a squat card sitting beside
+                                                // a tall one with no room around either.
+                                                <div key={idx} title={step.description} className={`flex-1 min-w-[120px] min-h-[7.5rem] rounded-lg p-3 border transition-colors flex flex-col ${step.status === 'running' ? 'bg-slate-900 border-blue-500/50 shadow-sm shadow-blue-500/10' :
                                                     step.status === 'success' ? 'bg-slate-900 border-emerald-900/50' :
                                                         step.status === 'failed' ? 'bg-red-950/20 border-red-500/50 shadow-sm shadow-red-500/10' :
                                                             step.status === 'error' ? 'bg-amber-950/20 border-amber-500/50 shadow-sm shadow-amber-500/10' :

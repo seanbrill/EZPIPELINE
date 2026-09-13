@@ -581,7 +581,11 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                         ) : (
                                             <div className="space-y-4 pl-6">
                                                 <div className="grid grid-cols-12 gap-6">
-                                                    <div className="col-span-12 lg:col-span-4 space-y-5">
+                                                    {/* Three columns for the metadata, nine for the script.
+                                                        The left side holds a name, a shell picker and a
+                                                        checkbox; the right holds the thing anybody opened
+                                                        this to read. It used to be four and eight. */}
+                                                    <div className="col-span-12 lg:col-span-3 space-y-5">
                                                         <div className="space-y-1.5">
                                                             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Step Name</label>
                                                             <input
@@ -619,7 +623,7 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                                         </div>
                                                     </div>
 
-                                                    <div className="col-span-12 lg:col-span-8 space-y-1.5 flex flex-col">
+                                                    <div className="col-span-12 lg:col-span-9 space-y-1.5 flex flex-col">
                                                         <div className="flex justify-between items-end border-b border-slate-800 pb-2 mb-1">
                                                             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Run Command</label>
 
@@ -633,7 +637,11 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
 
                                                         <textarea
                                                             id={`step-run-${idx}`}
-                                                            className="w-full h-32 bg-black/40 border border-slate-800 rounded-lg p-3 text-xs font-mono text-blue-200 focus:border-blue-500 outline-none resize-y leading-relaxed custom-scrollbar shadow-inner"
+                                                            // 128px showed about five lines of a step that is
+                                                            // routinely forty, so reading one meant scrolling a
+                                                            // small box inside a large empty modal. Sized off the
+                                                            // viewport with a floor, and still resizable by hand.
+                                                            className="w-full h-[42vh] min-h-64 bg-black/40 border border-slate-800 rounded-lg p-3 text-xs font-mono text-blue-200 focus:border-blue-500 outline-none resize-y leading-relaxed custom-scrollbar shadow-inner"
                                                             value={step.run || ''}
                                                             onChange={e => handleStepChange(idx, 'run', e.target.value)}
                                                             spellCheck={false}
@@ -646,7 +654,10 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Description (Optional)</label>
                                                     <textarea
-                                                        className="w-full bg-black/20 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-300 focus:border-slate-500 outline-none resize-none h-16 transition-colors"
+                                                        // resize-y rather than resize-none: these descriptions
+                                                        // run to a paragraph in this repository, and a fixed
+                                                        // four-line box with no handle hid most of one.
+                                                        className="w-full bg-black/20 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-300 focus:border-slate-500 outline-none resize-y h-24 transition-colors"
                                                         value={step.description || ''}
                                                         onChange={e => handleStepChange(idx, 'description', e.target.value)}
                                                         placeholder="e.g. Builds the frontend using npm"

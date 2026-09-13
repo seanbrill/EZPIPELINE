@@ -308,8 +308,13 @@ const PipelineSettingsModal: React.FC<PipelineSettingsModalProps> = ({ pipeline,
     const canSave = (activeTab === 'steps' && permissions.canEditYaml) || (activeTab === 'environment' && permissions.canEditEnv);
 
     return (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#1e1e1e] rounded-xl border border-slate-700 shadow-2xl w-[90vw] h-[85vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-2">
+            {/* Nearly the whole window. The thing being edited is a pipeline
+                step, which is a shell script forty lines long, and every pixel
+                given back to the page behind is a pixel not showing one. The
+                backdrop keeps a thin margin so it still reads as a layer over
+                the dashboard rather than a new page. */}
+            <div className="bg-[#1e1e1e] rounded-xl border border-slate-700 shadow-2xl w-[97vw] h-[95vh] flex flex-col">
                 <div className="flex justify-between items-center p-4 border-b border-slate-700">
                     <div>
                         <h2 className="text-xl font-bold text-white">{pipeline.appName}</h2>
