@@ -3,6 +3,7 @@ import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration } from '../../helpers/formatDuration';
 import { readJSON, writeJSON } from '../../helpers/persistedState';
+import { stepProgress } from '../../helpers/stepProgress';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
 import FileTreeSidebar from '../../components/FileTreeSidebar';
 import CreatePipelineModal from '../../components/CreatePipelineModal';
@@ -70,6 +71,10 @@ export interface BuildHistoryEntry {
         duration?: number;
         description?: string;
         continueOnError?: boolean;  // For status display logic
+        /** Median of recent successful runs, ms. Absent until there is history. */
+        estimatedDuration?: number;
+        /** Epoch ms this run started the step. */
+        startedAt?: number;
     }>;
     triggeredBy: string;
     activeStep?: string;
@@ -620,6 +625,21 @@ const DashboardPage: React.FC = () => {
     useEffect(() => {
         writeJSON(SIDEBAR_KEY, sidebarCollapsed);
     }, [sidebarCollapsed]);
+
+    // A local clock, so a running step's bar advances between server updates
+    // instead of jumping only when a step changes.
+    //
+    // ONLY WHILE SOMETHING IS RUNNING. A dashboard of finished builds must not
+    // re-render once a second for the life of the tab. `paused` deliberately
+    // does not count: a build waiting at an approval gate is waiting on a
+    // person, and a bar creeping forward would be inventing progress.
+    const [now, setNow] = useState(() => Date.now());
+    const anyRunning = buildHistory.some(b => b.status === 'running');
+    useEffect(() => {
+        if (!anyRunning) return;
+        const id = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(id);
+    }, [anyRunning]);
 
     const createGroup = async (parentPath?: string) => {
         setGroupParentPath(parentPath);
@@ -1217,18 +1237,53 @@ const DashboardPage: React.FC = () => {
                                                         {step.status === 'pending' && <Circle className="w-3 h-3 text-slate-700" />}
                                                     </div>
 
-                                                    <div className="text-slate-500 text-xs font-mono mb-1 h-4 mt-auto">
-                                                        {step.duration ? formatDuration(step.duration) : step.status === 'running' ? '...' : '--'}
-                                                    </div>
+                                                    {(() => {
+                                                        // An approval gate never carries an estimate - the server
+                                                        // withholds it, because a gate's duration is how long
+                                                        // somebody took to click - so stepProgress returns null
+                                                        // for one and it keeps the indeterminate bar.
+                                                        const fraction = step.status === 'running'
+                                                            ? stepProgress(step.estimatedDuration, step.startedAt, now)
+                                                            : null;
+                                                        const elapsed = step.status === 'running' && step.startedAt
+                                                            ? Math.max(0, now - step.startedAt)
+                                                            : null;
+                                                        return (
+                                                            <>
+                                                                <div className="text-slate-500 text-xs font-mono mb-1 h-4 mt-auto">
+                                                                    {step.duration
+                                                                        ? formatDuration(step.duration)
+                                                                        : elapsed !== null
+                                                                            // Elapsed, and what it usually takes. Seeing
+                                                                            // "2m10s / ~40s" is the whole point: it says
+                                                                            // this run is slow, which "..." never did.
+                                                                            ? <>{formatDuration(elapsed)}
+                                                                                {step.estimatedDuration
+                                                                                    ? <span className="text-slate-600"> / ~{formatDuration(step.estimatedDuration)}</span>
+                                                                                    : null}
+                                                                            </>
+                                                                            : step.status === 'running' ? '...' : '--'}
+                                                                </div>
 
-                                                    <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-                                                        <div className={`h-full transition-all duration-500 ${step.status === 'running' ? 'bg-blue-500 w-full animate-pulse' :
-                                                            step.status === 'success' ? 'bg-emerald-500 w-full' :
-                                                                step.status === 'failed' ? 'bg-red-500 w-full' :
-                                                                    step.status === 'error' ? 'bg-amber-500 w-full' :
-                                                                        'w-0'
-                                                            }`}></div>
-                                                    </div>
+                                                                <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                                                                    {fraction !== null ? (
+                                                                        <div
+                                                                            className="h-full bg-blue-500 transition-all duration-1000 ease-linear"
+                                                                            style={{ width: `${(fraction * 100).toFixed(1)}%` }}
+                                                                            title={`about ${Math.round(fraction * 100)}% of the usual time for this step`}
+                                                                        />
+                                                                    ) : (
+                                                                        <div className={`h-full transition-all duration-500 ${step.status === 'running' ? 'bg-blue-500 w-full animate-pulse' :
+                                                                            step.status === 'success' ? 'bg-emerald-500 w-full' :
+                                                                                step.status === 'failed' ? 'bg-red-500 w-full' :
+                                                                                    step.status === 'error' ? 'bg-amber-500 w-full' :
+                                                                                        'w-0'
+                                                                            }`}></div>
+                                                                    )}
+                                                                </div>
+                                                            </>
+                                                        );
+                                                    })()}
 
                                                     {/* Approval Button - Only for 'approval' steps.
                                                         Decided by the step's declared TYPE, which is

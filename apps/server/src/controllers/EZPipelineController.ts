@@ -50,6 +50,14 @@ export interface BuildStepHistory {
   startTime?: Date;
   endTime?: Date;
   duration?: number; // in milliseconds
+  /**
+   * The median duration of this step across recent SUCCESSFUL runs of the same
+   * pipeline, in milliseconds. Absent until the step has succeeded at least
+   * once, which the client shows as an indeterminate bar rather than a guess.
+   */
+  estimatedDuration?: number;
+  /** Epoch ms this run started the step, so elapsed can be measured. */
+  startedAt?: number;
 }
 
 export interface BuildHistoryEntry {
@@ -76,6 +84,7 @@ export interface BuildHistoryEntry {
 
 import { execSync, spawn } from "child_process";
 import { PluginManager } from "../services/PluginManager.js";
+import { stepEstimates } from "../services/stepEstimates.js";
 
 import dotenv from "dotenv";
 import Logger from "./Logger.js";
@@ -144,6 +153,7 @@ export default class EZPipelineController extends EventEmitter {
 
   public getBuildHistory(group?: string): BuildHistoryEntry[] {
     const rawBuilds = this.buildService.getRecentBuilds(100);
+    const estimates = stepEstimates(rawBuilds as any);
 
     // Map to BuildHistoryEntry
     let entries: BuildHistoryEntry[] = rawBuilds.map(b => {
@@ -234,7 +244,22 @@ export default class EZPipelineController extends EventEmitter {
             // always going to fail on somebody's wording.
             type: s.type,
             status: stepStatus,
-            duration: stepDuration
+            duration: stepDuration,
+            // What this step usually takes, and when this run started it. The
+            // client needs both to draw a bar that moves: one to scale
+            // against, one to measure from.
+            //
+            // NEVER FOR AN APPROVAL GATE. A gate's recorded duration is how
+            // long a person took to click, which is not a property of the step
+            // and not a thing to predict. Real history had two of them at 1.4m
+            // and 39.5s; offering those as estimates would put "~1.4m" beside a
+            // gate that takes exactly as long as somebody is away from their
+            // desk. Dropped here rather than on the client so there is one
+            // place that decides it.
+            estimatedDuration: s.type === 'approval'
+              ? undefined
+              : estimates.get(b.target)?.get(s.name),
+            startedAt: typeof timings[s.name]?.start === "number" ? timings[s.name].start : undefined
           };
         }) : []
       };
