@@ -1565,17 +1565,37 @@ const DashboardPage: React.FC = () => {
                                                         return (
                                                             <div className="mt-3">
                                                                 <button
-                                                                    disabled={running || blocked || chain.length === 0}
+                                                                    // aria-disabled WHEN BLOCKED, not disabled, and the
+                                                                    // difference is the whole feature. A truly disabled
+                                                                    // button receives no mouse events, so `title` never
+                                                                    // fires on it - the hover explanation Sean asked
+                                                                    // for would simply never appear. aria-disabled
+                                                                    // announces the same thing to assistive tech while
+                                                                    // leaving the element hoverable, and the click is
+                                                                    // refused below instead of by the browser.
+                                                                    //
+                                                                    // `disabled` is still used for the two states that
+                                                                    // are not about waiting: already running, and no
+                                                                    // actions configured. Nothing to explain there.
+                                                                    disabled={running || chain.length === 0}
+                                                                    aria-disabled={blocked || undefined}
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
+                                                                        if (blocked) return;
                                                                         runAction(build, step.name, step.confirm === true, summary);
                                                                     }}
                                                                     // A DISABLED BUTTON HAS TO SAY WHY. "Promote to
                                                                     // production" greyed out and silent is
                                                                     // indistinguishable from broken, which is the
                                                                     // failure this feature would otherwise ship.
+                                                                    //
+                                                                    // This is now the ONLY place that reason appears -
+                                                                    // the caption under the button is gone - so it
+                                                                    // names the step AND what it is still doing, rather
+                                                                    // than assuming the reader can see the card it
+                                                                    // refers to.
                                                                     title={blocked
-                                                                        ? `Waiting on "${waitingOn!.name}" to finish`
+                                                                        ? `Waiting on "${waitingOn!.name}" (${waitingOn!.status}) to finish first`
                                                                         : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
                                                                     // AN ICON, NOT THE NAME. The card's heading is
                                                                     // already the step name, so the button repeated it
@@ -1590,17 +1610,26 @@ const DashboardPage: React.FC = () => {
                                                                     aria-label={blocked
                                                                         ? `${step.name} - waiting on "${waitingOn!.name}"`
                                                                         : step.name}
-                                                                    className="w-full bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/50 px-2 py-1.5 rounded transition-all flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600/20"
+                                                                    // AMBER WHILE IT WAITS. Green-but-faded read as
+                                                                    // "this is the button, it is just dim"; amber reads
+                                                                    // as a state - the same colour this dashboard
+                                                                    // already uses for a step that needs attention.
+                                                                    className={`w-full px-2 py-1.5 rounded transition-all flex items-center justify-center border ${
+                                                                        blocked
+                                                                            ? "bg-amber-500/10 text-amber-400/80 border-amber-500/40 cursor-help hover:bg-amber-500/20"
+                                                                            : "bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border-emerald-500/50"
+                                                                    } disabled:opacity-40 disabled:cursor-not-allowed`}
                                                                 >
                                                                     {running
                                                                         ? <Loader className="w-4 h-4 animate-spin" />
                                                                         : <Play className="w-4 h-4 fill-current" />}
                                                                 </button>
-                                                                {blocked && (
-                                                                    <p className="mt-1 text-[9px] leading-tight text-slate-500 text-center">
-                                                                        after &ldquo;{waitingOn!.name}&rdquo;
-                                                                    </p>
-                                                                )}
+                                                                {/* THE CAPTION IS GONE. It said `after "Build and
+                                                                    push the images"` under a 120px card, wrapping to
+                                                                    two or three lines and making the shortest-lived
+                                                                    piece of information on the card the largest. The
+                                                                    same sentence is on hover now, and on the
+                                                                    aria-label for anyone not using a mouse. */}
                                                             </div>
                                                         );
                                                     })()}
