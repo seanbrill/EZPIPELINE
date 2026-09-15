@@ -821,10 +821,46 @@ export default class EZPipelineController extends EventEmitter {
     return new_build;
   }
 
+  /**
+   * A step threw. Record it - WITHOUT overwriting a deliberate abort.
+   *
+   * ── THE ORDERING BUG THIS EXISTS BECAUSE OF ──────────────────────────────
+   *
+   * Aborting now actually kills the step's process group, and a killed step
+   * rejects. That rejection lands here, and this method used to write
+   * status 'failed' unconditionally - a few milliseconds after abort() had
+   * written 'aborted'. So dev #202, which Sean stopped on purpose, ended up
+   * reading "Failed" with the error "Command was stopped (SIGTERM)".
+   *
+   * It only became possible once abort started working: before that the step
+   * ran to completion and nothing rejected. Fixing one thing made the next
+   * thing visible, which is the usual shape.
+   *
+   * The distinction is worth keeping. "Failed" sends somebody looking for a
+   * fault; "aborted" says a person decided. Collapsing them wastes the reader's
+   * time in exactly the moment they are trying to work out what happened.
+   */
   private build_error(build: Build, error: Error) {
-    build.ended = new Date();
+    // Not overwritten if abort() already set one: that is the moment the
+    // person pressed the button, and it is earlier and more meaningful than
+    // the moment the doomed step noticed.
+    build.ended = build.ended ?? new Date();
     build.error = error.message;
-    this.buildService.updateBuild(build.id, { error: error.message, ended: build.ended, status: 'failed' });
+
+    if (build.isAborted) {
+      this.buildService.updateBuild(build.id, {
+        error: error.message,
+        ended: build.ended,
+        status: 'aborted',
+      });
+      return;
+    }
+
+    this.buildService.updateBuild(build.id, {
+      error: error.message,
+      ended: build.ended,
+      status: 'failed',
+    });
   }
 
   public clear_builds() {
