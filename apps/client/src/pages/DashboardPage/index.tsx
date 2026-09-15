@@ -13,6 +13,7 @@ import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw, Zap } from 'lucide-react';
+import { EnvTag } from '../../components/Shared/EnvTag';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
 import GroupConfigModal from '../../components/GroupConfigModal';
@@ -27,6 +28,12 @@ interface Pipeline {
     group?: string;
     filePath?: string;
     env?: string;
+    /**
+     * The pipeline's `environment:` key - whatever it says, not a fixed set.
+     * /api/targets spreads the parsed yaml, so this has always been on the
+     * wire; nothing on this page read it.
+     */
+    environment?: string;
     requireConfirmation?: boolean;
 }
 
@@ -50,6 +57,8 @@ export interface BuildHistoryEntry {
      * is by definition not - so the only way to release a gate was a curl.
      */
     status: 'running' | 'paused' | 'success' | 'failed' | 'aborted' | 'error';
+    /** The pipeline's `environment:` key, for the tag. Absent is fine. */
+    environment?: string;
     startTime: string;
     endTime?: string;
     duration?: number;
@@ -1209,6 +1218,12 @@ const DashboardPage: React.FC = () => {
                                         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                                             <span className="text-slate-400 font-mono text-sm">#{build.buildNumber}</span>
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
+                                            {/* WHICH ENVIRONMENT this run touched. The history is a
+                                                single list across every pipeline, so "notch.fm deploy"
+                                                appears twice and the two rows are otherwise identical
+                                                at a glance - which is the one thing you least want to
+                                                misread when looking at a failure. */}
+                                            <EnvTag environment={build.environment} />
                                             {/* Who started it. A push-triggered run is the one nobody
                                                 was watching, so it is worth telling apart from a run
                                                 somebody chose to start and is sitting in front of. */}

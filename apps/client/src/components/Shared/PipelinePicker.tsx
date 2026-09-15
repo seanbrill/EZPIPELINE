@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EnvTag } from "./EnvTag";
 import { ChevronDown, Search, X } from "lucide-react";
 
 /**
@@ -28,6 +29,8 @@ export interface PickerPipeline {
     appName: string;
     description?: string;
     group?: string;
+    /** The pipeline's `environment:` key, shown as the DEV / PROD pill. */
+    environment?: string;
 }
 
 export function PipelinePicker({
@@ -137,6 +140,11 @@ export function PipelinePicker({
                 <span className={`flex-1 truncate ${selected ? "" : "text-slate-400"}`}>
                     {selected ? selected.appName : placeholder}
                 </span>
+                {/* WHICH ENVIRONMENT, in the closed state above all. This
+                    control runs things: "notch.fm deploy" reads the same
+                    whether it is about to touch development or production, and
+                    the group text beside it is easy to skim past. */}
+                {selected?.environment && <EnvTag environment={selected.environment} />}
                 {/* The group rides along in the closed state too: two pipelines
                     with the same name are otherwise indistinguishable once the
                     list is shut. */}
@@ -198,7 +206,10 @@ export function PipelinePicker({
                                                     active ? "bg-slate-800" : ""
                                                 } ${p.id === value ? "text-emerald-400" : "text-white"}`}
                                             >
-                                                <span className="block truncate text-sm">{p.appName}</span>
+                                                <span className="flex items-center gap-1.5 min-w-0">
+                                                    <span className="truncate text-sm">{p.appName}</span>
+                                                    <EnvTag environment={p.environment} />
+                                                </span>
                                                 {p.description && (
                                                     <span className="block truncate text-[11px] text-slate-400">
                                                         {p.description}

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Folder, FolderOpen, ChevronRight, ChevronDown, Trash2, FolderPlus, Edit2, Box, Search, Settings } from 'lucide-react';
 import { usePreferences } from '../../contexts/PreferencesContext';
 import { TAG_COLORS } from '../../constants/tagColors';
+import { EnvTag } from '../Shared/EnvTag';
 import { readJSON, writeJSON } from '../../helpers/persistedState';
 
 /** Which folders were open, per browser. A view preference, not data. */
@@ -252,24 +253,9 @@ const FileTreeSidebar: React.FC<FileTreeSidebarProps> = ({
 
                         <span className="text-sm font-medium truncate">{node.name}</span>
 
-                        {node.environment && (() => {
-                            const tag = node.environment.toLowerCase();
-                            const colorName = envTagColors[tag];
-                            // If tag is customized, use custom color. If not, fallback to emerald
-                            const style = (colorName && TAG_COLORS[colorName]) ? TAG_COLORS[colorName] : TAG_COLORS['emerald'];
-
-                            // Check if style is valid before rendering classes
-                            if (!style) return null;
-
-                            // Use label from map or fallback to substring
-                            const label = (envTagLabels && envTagLabels[tag]) ? envTagLabels[tag] : node.environment.substring(0, 4);
-
-                            return (
-                                <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded ml-1 ${style.bg} ${style.text} ${style.border} border`}>
-                                    {label}
-                                </span>
-                            );
-                        })()}
+                        {/* One definition, shared with the Quick Run picker and the
+                            build cards - see components/Shared/EnvTag. */}
+                        <EnvTag environment={node.environment} className="ml-1" />
                     </div>
 
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

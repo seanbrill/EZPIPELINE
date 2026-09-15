@@ -108,6 +108,14 @@ export interface BuildHistoryEntry {
   commits?: { sha: string; shortSha: string; author: string; date: string; subject: string }[];
   /** The head it built at, so the row can name a version without a commit list. */
   commitSha?: string | null;
+  /**
+   * The pipeline's `environment:` key - whatever it says, not a fixed set.
+   *
+   * The history is one list across every pipeline, so two runs of "notch.fm
+   * deploy" are otherwise identical at a glance, which is the worst thing to
+   * misread when looking at a failure.
+   */
+  environment?: string;
   /** Images it produced. `rollbackable` is false for a mutable tag like latest. */
   artifacts?: { reference: string; tag: string | null; digest: string | null; source: string; rollbackable: boolean }[];
 }
@@ -222,6 +230,9 @@ export default class EZPipelineController extends EventEmitter {
         pipelineId: b.target,
         group: pipeline?.group || '',
         status: b.status as any,
+        // Straight off the parsed pipeline, so a renamed or invented
+        // environment needs no change here.
+        environment: (pipeline as any)?.environment,
         startTime: new Date(b.started_at),
         endTime: b.ended_at ? new Date(b.ended_at) : undefined,
         triggeredBy: (b as any).triggered_by || 'manual',
