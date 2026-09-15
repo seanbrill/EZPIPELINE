@@ -1059,6 +1059,60 @@ const DashboardPage: React.FC = () => {
     // The server has sent the real one all along, as `buildNumber`.
     const filteredBuildHistory = buildHistory.filter(b => inSelectedGroup(b.group));
 
+    /**
+     * How many build rows are actually rendered.
+     *
+     * ── WHY THIS IS NEEDED AT ALL ──────────────────────────────────────────
+     *
+     * One build card draws a card per STEP, and the notch.fm deploy has 19 of
+     * them. At 204 builds that is close to four thousand step cards in the
+     * document, each with its own bar, icons and duration.
+     *
+     * It is worst exactly when somebody is watching: `now` ticks once a second
+     * while any build is running, and every one of those cards reconciles on
+     * every tick. The guard above stops that happening on an idle dashboard;
+     * it cannot make four thousand cards cheap during a deploy.
+     *
+     * Ten at a time, more as you reach the bottom. The rows are already sorted
+     * newest-first, so the first ten are the ones anybody opened the page for.
+     */
+    const PAGE = 10;
+    const [visibleBuilds, setVisibleBuilds] = useState(PAGE);
+    const visibleBuildHistory = filteredBuildHistory.slice(0, visibleBuilds);
+    const moreToLoad = filteredBuildHistory.length > visibleBuilds;
+
+    /**
+     * The sentinel, held in STATE rather than a ref.
+     *
+     * A ref does not re-run the effect when the node appears, so the observer
+     * would attach to null on first render and never to the real element. A
+     * callback ref that sets state re-runs it exactly when the node arrives
+     * and again when it leaves.
+     */
+    const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
+
+    // Reset when the group changes: a window of 120 rows opened on one group
+    // should not carry into the next one.
+    useEffect(() => {
+        setVisibleBuilds(PAGE);
+    }, [selectedGroup]);
+
+    useEffect(() => {
+        if (!sentinel || !moreToLoad) return;
+        const io = new IntersectionObserver(
+            (entries) => {
+                if (entries.some(e => e.isIntersecting)) {
+                    setVisibleBuilds(n => n + PAGE);
+                }
+            },
+            // Start fetching slightly before the sentinel is on screen, so the
+            // next rows are there by the time the scroll reaches them.
+            { rootMargin: "400px" }
+        );
+        io.observe(sentinel);
+        return () => io.disconnect();
+    }, [sentinel, moreToLoad]);
+
     return (
         <div className="flex flex-col h-full bg-[var(--color-bg)]">
             <div className="flex flex-1 overflow-hidden">
@@ -1251,7 +1305,8 @@ const DashboardPage: React.FC = () => {
                         </div>
 
                         {filteredBuildHistory.length > 0 ? (
-                            filteredBuildHistory.map((build) => (
+                            <>
+                            {visibleBuildHistory.map((build) => (
                                 <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
                                     <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between gap-4">
                                         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
@@ -1696,7 +1751,28 @@ const DashboardPage: React.FC = () => {
                                         />
                                     </div>
                                 </div>
-                            ))
+                            ))}
+
+                            {/* THE SENTINEL. Rendered only while there is more
+                                to show, so the observer disconnects on its own
+                                at the end of the list rather than sitting there
+                                firing against nothing.
+
+                                A visible line rather than an empty div: a list
+                                that silently grows as you scroll is good, and a
+                                list that appears to end when it has not is not.
+                                It says how many are left. */}
+                            {moreToLoad && (
+                                <div
+                                    ref={setSentinel}
+                                    className="flex items-center justify-center gap-2 py-6 text-xs text-slate-500"
+                                >
+                                    <Loader className="w-3 h-3 animate-spin" />
+                                    {filteredBuildHistory.length - visibleBuilds} older{" "}
+                                    {filteredBuildHistory.length - visibleBuilds === 1 ? "build" : "builds"}
+                                </div>
+                            )}
+                            </>
                         ) : (
                             <div className="flex flex-col items-center justify-center p-16 border border-dashed border-[var(--color-text-muted)]/30 rounded-xl bg-[var(--color-text-muted)]/5">
                                 <div className="p-4 bg-[var(--color-surface)] rounded-full mb-4 ring-1 ring-[var(--color-text-muted)]/20 shadow-lg">
