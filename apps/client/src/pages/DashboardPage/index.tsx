@@ -273,6 +273,19 @@ const SIDEBAR_KEY = 'ezpipeline.sidebar.collapsed';
 const DashboardPage: React.FC = () => {
     const [pipelines, setPipelines] = useState<Pipeline[]>([]);
     const [buildHistory, setBuildHistory] = useState<BuildHistoryEntry[]>([]);
+    /**
+     * The build whose abort is in flight.
+     *
+     * Sean: "when I clicked abort the ui hung for a second before actually
+     * showing the aborted status". It was not hung - it was working. Abort now
+     * signals the step's process group and waits for the write, then this page
+     * refetches the history, and BOTH round trips happened with the button
+     * still reading "Abort" and still looking pressable.
+     *
+     * A control that does nothing visible for a second is a control people
+     * press twice. Keyed by build id because this lives inside a list.
+     */
+    const [aborting, setAborting] = useState<string | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     // Restored from the last visit, then VALIDATED once the real lists arrive -
     // see the setAllGroups and setPipelines calls. A remembered group that has
@@ -1324,6 +1337,7 @@ const DashboardPage: React.FC = () => {
                                             </button>
                                             {(build.status === 'running' || build.status === 'paused') ? (
                                                 <button
+                                                    disabled={aborting === build.id}
                                                     onClick={async (e) => {
                                                         e.stopPropagation();
                                                         if (!await confirm({
@@ -1333,15 +1347,35 @@ const DashboardPage: React.FC = () => {
                                                             confirmText: "Abort"
                                                         })) return;
 
-                                                        await fetch(`${API_URL}/api/builds/${build.id}/abort`, {
-                                                            method: 'POST',
-                                                            headers: { Authorization: `Bearer ${token}` }
-                                                        });
-                                                        fetchBuildHistory();
+                                                        // Set BEFORE the request, cleared in finally, so the
+                                                        // button reflects the work rather than the outcome -
+                                                        // including when the request fails, where leaving it
+                                                        // spinning forever would be the worse bug.
+                                                        setAborting(build.id);
+                                                        try {
+                                                            await fetch(`${API_URL}/api/builds/${build.id}/abort`, {
+                                                                method: 'POST',
+                                                                headers: { Authorization: `Bearer ${token}` }
+                                                            });
+                                                            // Awaited now. It was fire-and-forget, so the
+                                                            // spinner would have stopped while the list was
+                                                            // still showing the build as running.
+                                                            await fetchBuildHistory();
+                                                        } finally {
+                                                            setAborting(null);
+                                                        }
                                                     }}
-                                                    className={`${RUN_CTRL_H} bg-red-600/10 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-3 text-xs rounded font-bold transition-all flex items-center gap-1`}
+                                                    className={`${RUN_CTRL_H} bg-red-600/10 hover:bg-red-600/30 text-red-400 border border-red-500/30 px-3 text-xs rounded font-bold transition-all flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-red-600/10`}
                                                 >
-                                                    <Square className="w-3 h-3 fill-current" /> Abort
+                                                    {aborting === build.id ? (
+                                                        <>
+                                                            <Loader className="w-3 h-3 animate-spin" /> Stopping
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Square className="w-3 h-3 fill-current" /> Abort
+                                                        </>
+                                                    )}
                                                 </button>
                                             ) : (
                                                 <button
