@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration, formatDurationCompact } from '../../helpers/formatDuration';
@@ -101,6 +101,17 @@ export interface BuildHistoryEntry {
          * here: the step list is ordered and each entry carries a status.
          */
         requirePriorSteps?: boolean;
+        /**
+         * For `type: action`: whether the button is refused on any run but the
+         * newest for this pipeline.
+         *
+         * For an action that operates on the CURRENT state of something -
+         * "promote to production" merges whatever develop points at now -
+         * pressing it from an older card does not do what the card implies. It
+         * does not promote THAT run; it promotes today's head, from a row
+         * describing last Tuesday.
+         */
+        requireLatestBuild?: boolean;
         /** Median of recent successful runs, ms. Absent until there is history. */
         estimatedDuration?: number;
         /** Epoch ms this run started the step. */
@@ -286,6 +297,21 @@ const DashboardPage: React.FC = () => {
      * press twice. Keyed by build id because this lives inside a list.
      */
     const [aborting, setAborting] = useState<string | null>(null);
+
+    /**
+     * The newest run of each pipeline, by id.
+     *
+     * buildHistory is sorted newest-first at fetch time, so the first row for
+     * a pipeline is its latest - no timestamps compared here, and no second
+     * definition of "latest" to drift from that sort.
+     */
+    const latestBuildPerPipeline = useMemo(() => {
+        const newest = new Map<string, string>();
+        for (const b of buildHistory) {
+            if (b.id && !newest.has(b.pipelineId)) newest.set(b.pipelineId, b.id);
+        }
+        return newest;
+    }, [buildHistory]);
     const [logs, setLogs] = useState<string[]>([]);
     // Restored from the last visit, then VALIDATED once the real lists arrive -
     // see the setAllGroups and setPipelines calls. A remembered group that has
@@ -1561,7 +1587,14 @@ const DashboardPage: React.FC = () => {
                                                         const waitingOn = step.requirePriorSteps
                                                             ? before.find(x => x.status !== 'success')
                                                             : undefined;
-                                                        const blocked = !!waitingOn;
+                                                        // SUPERSEDED, which is a different refusal from waiting.
+                                                        // An action on the current state of something - promote
+                                                        // merges whatever develop points at NOW - does not do
+                                                        // what an old card implies when pressed from one.
+                                                        const superseded = step.requireLatestBuild === true
+                                                            && !!build.id
+                                                            && latestBuildPerPipeline.get(build.pipelineId) !== build.id;
+                                                        const blocked = !!waitingOn || superseded;
                                                         return (
                                                             <div className="mt-3">
                                                                 <button
@@ -1594,9 +1627,11 @@ const DashboardPage: React.FC = () => {
                                                                     // names the step AND what it is still doing, rather
                                                                     // than assuming the reader can see the card it
                                                                     // refers to.
-                                                                    title={blocked
-                                                                        ? `Waiting on "${waitingOn!.name}" (${waitingOn!.status}) to finish first`
-                                                                        : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
+                                                                    title={waitingOn
+                                                                        ? `Waiting on "${waitingOn.name}" (${waitingOn.status}) to finish first`
+                                                                        : superseded
+                                                                            ? `There is a newer run of this pipeline. This action works on the current state, so running it from here would not promote THIS build - open the latest run instead.`
+                                                                            : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
                                                                     // AN ICON, NOT THE NAME. The card's heading is
                                                                     // already the step name, so the button repeated it
                                                                     // directly underneath - and being the longest text
@@ -1607,9 +1642,11 @@ const DashboardPage: React.FC = () => {
                                                                     // Icon-only needs a name for anyone not looking at
                                                                     // it, hence aria-label; `title` already carries
                                                                     // what it will do, or why it cannot yet.
-                                                                    aria-label={blocked
-                                                                        ? `${step.name} - waiting on "${waitingOn!.name}"`
-                                                                        : step.name}
+                                                                    aria-label={waitingOn
+                                                                        ? `${step.name} - waiting on "${waitingOn.name}"`
+                                                                        : superseded
+                                                                            ? `${step.name} - unavailable, a newer run of this pipeline exists`
+                                                                            : step.name}
                                                                     // AMBER WHILE IT WAITS. Green-but-faded read as
                                                                     // "this is the button, it is just dim"; amber reads
                                                                     // as a state - the same colour this dashboard

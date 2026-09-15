@@ -790,6 +790,32 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                                             </span>
                                                         </label>
                                                     </div>
+                                                    <div className="col-span-12 pb-1">
+                                                        <label className="flex items-start gap-2 cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={step.requireLatestBuild === true}
+                                                                onChange={e => handleStepChange(idx, 'requireLatestBuild', e.target.checked)}
+                                                                className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-black/20 text-emerald-500"
+                                                            />
+                                                            <span className="text-xs text-slate-300">
+                                                                Only on the newest run of this pipeline
+                                                                {/* FOR ACTIONS ON CURRENT STATE. "Promote to
+                                                                    production" merges whatever develop points at
+                                                                    NOW, so pressing it from an older card does not
+                                                                    promote that card's build - it promotes today's
+                                                                    head from a row describing last week. The card
+                                                                    implies otherwise just by being the thing you
+                                                                    clicked. */}
+                                                                <span className="block text-[10px] text-slate-500">
+                                                                    For actions that work on the current state of something
+                                                                    rather than on this particular run - a promote that merges
+                                                                    the latest branch, say. Older runs keep the button, disabled,
+                                                                    and say why on hover.
+                                                                </span>
+                                                            </span>
+                                                        </label>
+                                                    </div>
                                                 </div>
 
                                                 <div>

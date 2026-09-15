@@ -43,6 +43,27 @@ export interface Step {
    * worked", and the config does not change to say it.
    */
   requirePriorSteps?: boolean;
+  /**
+   * For `type: action`: refuse the button on any run but the newest for this
+   * pipeline.
+   *
+   * ── FOR ACTIONS ON CURRENT STATE, WHICH IS NOT THE SAME AS THIS RUN ──────
+   *
+   * "Promote to production" merges whatever develop points at NOW. Pressed
+   * from an older card it does not promote that card's build - it promotes
+   * today's head, from a row describing last week, and the card implies
+   * otherwise simply by being the thing somebody clicked.
+   *
+   * Named for the CONDITION rather than the trigger: `requireLatestBuild`
+   * reads the same way as requirePriorSteps above it and says what must be
+   * true, where "disableOnNewBuild" says what happens and leaves the reader
+   * to work out when.
+   *
+   * Off by default, because it is wrong for the other kind of action - a
+   * rollback, or anything that re-runs THIS build's artifacts, is exactly the
+   * button you want on an old card.
+   */
+  requireLatestBuild?: boolean;
   cwd?: string;
   env?: Record<string, string>;
   continueOnError?: boolean;
@@ -76,6 +97,12 @@ export interface BuildStepHistory {
    * step's status, so it needs nothing else to work this out.
    */
   requirePriorSteps?: boolean;
+  /**
+   * For `type: action`: whether the button is refused on any run but the
+   * newest for this pipeline. The client holds the whole history and can see
+   * which run is newest, so it needs nothing else to work this out.
+   */
+  requireLatestBuild?: boolean;
   status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
   startTime?: Date;
   endTime?: Date;
@@ -294,6 +321,7 @@ export default class EZPipelineController extends EventEmitter {
             actions: s.actions,
             confirm: s.confirm,
             requirePriorSteps: s.requirePriorSteps,
+            requireLatestBuild: s.requireLatestBuild,
             status: stepStatus,
             duration: stepDuration,
             // What this step usually takes, and when this run started it. The
