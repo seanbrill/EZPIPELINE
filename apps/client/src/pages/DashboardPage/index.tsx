@@ -65,7 +65,7 @@ export interface BuildHistoryEntry {
          * neither and could not be released from the UI at all.
          */
         type?: string;
-        status: 'pending' | 'running' | 'success' | 'failed' | 'error';
+        status: 'pending' | 'running' | 'success' | 'failed' | 'error' | 'aborted';
         startTime?: string;
         endTime?: string;
         duration?: number;
@@ -1381,7 +1381,14 @@ const DashboardPage: React.FC = () => {
                                                         const fraction = step.status === 'running'
                                                             ? stepProgress(step.estimatedDuration, step.startedAt, now)
                                                             : null;
-                                                        const elapsed = step.status === 'running' && step.startedAt
+                                                        // The BUILD has to be running too, not just the step.
+                                                        // Belt and braces: the step status is derived server-side
+                                                        // from the build status, and getting that derivation wrong
+                                                        // is what made an aborted build count for forty-five
+                                                        // minutes. This makes any future mistake in that mapping
+                                                        // cost a wrong label rather than a clock that never stops.
+                                                        const buildLive = build.status === 'running' || build.status === 'paused';
+                                                        const elapsed = buildLive && step.status === 'running' && step.startedAt
                                                             ? Math.max(0, now - step.startedAt)
                                                             : null;
                                                         return (

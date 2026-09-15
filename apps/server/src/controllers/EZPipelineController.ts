@@ -182,7 +182,11 @@ export default class EZPipelineController extends EventEmitter {
   }
 
   public getBuildHistory(group?: string): BuildHistoryEntry[] {
-    const rawBuilds = this.buildService.getRecentBuilds(100);
+    // PER PIPELINE, not the newest 100 overall. The old call made pipelines
+    // compete for one global window: a project with 197 builds showed 79,
+    // because 21 of the newest 100 rows belonged to three other pipelines.
+    // See BuildService.getRecentBuildsPerPipeline.
+    const rawBuilds = this.buildService.getRecentBuildsPerPipeline();
     const estimates = stepEstimates(rawBuilds as any);
 
     // Map to BuildHistoryEntry
@@ -592,12 +596,24 @@ export default class EZPipelineController extends EventEmitter {
     return result;
   }
 
+  /**
+   * The child process each running build is currently waiting on.
+   *
+   * Needed because abort() had no way to reach it. The step loop checks
+   * build.isAborted BETWEEN steps, so aborting a build whose current step
+   * never returns did nothing at all: build #199 was marked aborted and its
+   * bash child went on running for over an hour afterwards, still holding a
+   * Postgres firewall rule open.
+   */
+  private activeChildren = new Map<string, import("child_process").ChildProcess>();
+
   private runCommandLive(
     command: string,
     logger: ILogger,
     cwd: string | undefined,
     env?: NodeJS.ProcessEnv,
-    shell?: string | undefined
+    shell?: string | undefined,
+    buildId?: string
   ): Promise<number> {
     return new Promise((resolve, reject) => {
       const interpolatedCommand = this.interpolateEnv(
@@ -708,19 +724,34 @@ export default class EZPipelineController extends EventEmitter {
       const useShell = shell ?? true;
       const shellPath =
         typeof shell === "string" && shell.startsWith("/") ? shell : true;
+      // detached: true GIVES THE CHILD ITS OWN PROCESS GROUP, and that is the
+      // whole mechanism behind aborting properly.
+      //
+      // A step is a shell that runs other programs - bash running az running
+      // psql. Killing the shell alone orphans its children, which keep working
+      // and keep holding whatever they hold. The only way to stop the tree is
+      // to signal the process GROUP, and a group can only be signalled
+      // separately if it is not shared with the server.
+      //
+      // Without this the child sits in the server's own group, so
+      // `process.kill(-pid)` would take the server down with it. I did exactly
+      // that while investigating and the container restarted.
+      const spawnOpts = {
+        cwd: resolvedCwd,
+        env,
+        windowsHide: true,
+        // Not on Windows, where detached means "new console" and the negative
+        // pid kill does not exist.
+        detached: process.platform !== "win32",
+      };
       const child = useShell
-        ? spawn(interpolatedCommand, [], {
-          cwd: resolvedCwd,
-          env,
-          shell: shellPath,
-          windowsHide: true,
-        })
-        : spawn(cmd, args, {
-          cwd: resolvedCwd,
-          env,
-          shell: false,
-          windowsHide: true,
-        });
+        ? spawn(interpolatedCommand, [], { ...spawnOpts, shell: shellPath })
+        : spawn(cmd, args, { ...spawnOpts, shell: false });
+
+      // Registered so abort() can find it, and cleared on every exit path
+      // below so a finished build never leaves a dead handle behind.
+      if (buildId) this.activeChildren.set(buildId, child);
+      const forget = () => { if (buildId) this.activeChildren.delete(buildId); };
 
       child.stdout.on("data", data => {
         logger.info(data.toString().trim());
@@ -733,11 +764,22 @@ export default class EZPipelineController extends EventEmitter {
       });
 
       child.on("error", (err) => {
+        forget();
         logger.error(`[SPAWN ERROR] Failed to start command: ${cmd}`, err);
         reject(err);
       });
 
-      child.on("close", code => {
+      child.on("close", (code, signal) => {
+        forget();
+        // A KILLED STEP REPORTS THE SIGNAL, not "exit code null". Node gives a
+        // null code when a process died on a signal, and "failed with exit
+        // code null" reads as a broken step rather than as the abort somebody
+        // just pressed.
+        if (signal) {
+          logger.info(`[DEBUG] Command stopped by ${signal}`);
+          reject(new Error(`Command was stopped (${signal})`));
+          return;
+        }
         logger.info(`[DEBUG] Command finished with code ${code}`);
         if (code === 0) resolve(code);
         else reject(new Error(`Command failed with exit code ${code}`));
@@ -1299,7 +1341,8 @@ export default class EZPipelineController extends EventEmitter {
           buildLogger, // Pass proxy logger
           currentCwd, // Pass calculated absolute path
           envVars,
-          currentStep.shell
+          currentStep.shell,
+          build.id // so abort() can reach this step's process group
         );
 
         // End Timing Success
@@ -1361,12 +1404,72 @@ export default class EZPipelineController extends EventEmitter {
   }
 
 
+  /**
+   * Stop a build: set the flag, STOP THE WORK, and close the clock.
+   *
+   * ── WHAT THIS USED TO DO, AND WHY THAT WAS NOT ABORTING ──────────────────
+   *
+   * It set isAborted and wrote status 'aborted'. The step loop checks that
+   * flag BETWEEN steps, so a build whose current step never returns was never
+   * actually stopped - build #199 was marked aborted at 18:09 and its bash
+   * child was still running at 18:22, still holding a Postgres firewall rule
+   * open for an address nobody was using any more.
+   *
+   * It also never stamped `ended`, so ended_at stayed NULL. A build with a
+   * start and no end is one the dashboard keeps timing: #199 read "Aborted"
+   * in its header while its step counted past forty-five minutes underneath.
+   *
+   * ── SIGTERM FIRST, AND THAT IS NOT POLITENESS ────────────────────────────
+   *
+   * The steps here are shell scripts with EXIT traps that undo what they did -
+   * ci-cd/scripts/with-postgres.sh opens a Postgres firewall rule and removes
+   * it on any exit. SIGTERM lets bash run that trap; SIGKILL does not, and the
+   * rule is left behind. So: SIGTERM the group, give it a few seconds to clean
+   * up after itself, and only then insist.
+   *
+   * The NEGATIVE pid signals the whole process group rather than the shell
+   * alone - bash running az running psql - which is the only way to stop the
+   * tree. It works because runCommandLive spawns detached; without that the
+   * child shares the server's group and this would kill the server.
+   */
   public async abort(id: number | string) { // Updated type
-    let build = this.builds.find(x => x.id === id);
+    const buildId = String(id);
+    const child = this.activeChildren.get(buildId);
+    if (child?.pid) {
+      const pid = child.pid;
+      try {
+        process.kill(-pid, "SIGTERM");
+        this.logger.info(`Abort: asked build ${buildId} to stop (SIGTERM to group ${pid})`);
+      } catch {
+        // Already gone between the lookup and the signal, which is fine.
+      }
+      // Escalate only if it is still there. Unref'd so a pending timer can
+      // never hold the process open on shutdown.
+      const hard = setTimeout(() => {
+        try {
+          process.kill(-pid, "SIGKILL");
+          this.logger.warn(`Abort: build ${buildId} ignored SIGTERM, sent SIGKILL`);
+        } catch {
+          // Exited during the grace period, which is the good outcome.
+        }
+        this.activeChildren.delete(buildId);
+      }, 5000);
+      hard.unref?.();
+    }
+
+    const build = this.builds.find(x => x.id === id);
+    const ended = new Date();
     if (build) {
       build.isAborted = true;
-      this.buildService.updateBuild(build.id, { isAborted: true, status: 'aborted' });
+      build.ended = ended;
+      this.buildService.updateBuild(build.id, { isAborted: true, status: 'aborted', ended });
       this.emit("build_aborted", build);
+    } else {
+      // NOT IN MEMORY IS NOT NOTHING. `builds` is this process's own array, so
+      // a build started before the last server restart is absent from it and
+      // abort silently did nothing - the case where somebody is most likely to
+      // be pressing the button. The row is the truth; write to it directly.
+      this.buildService.updateBuild(buildId, { isAborted: true, status: 'aborted', ended } as any);
     }
   }
 

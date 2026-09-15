@@ -153,6 +153,47 @@ export class BuildService {
         return db.prepare("SELECT * FROM builds ORDER BY started_at DESC LIMIT ?").all(limit);
     }
 
+    /**
+     * The newest builds PER PIPELINE, rather than the newest builds overall.
+     *
+     * ── WHY THIS EXISTS ────────────────────────────────────────────────────
+     *
+     * getRecentBuilds takes the newest N across the whole table, and the
+     * dashboard then filters that down to the pipeline you are looking at. So
+     * pipelines COMPETE for the same N slots: with the limit at 100, a project
+     * with 197 builds of its own showed 79 of them, because the other 21 slots
+     * had gone to three unrelated pipelines. The history looked truncated for
+     * reasons that had nothing to do with that pipeline.
+     *
+     * Partitioning by target fixes the competition. Each pipeline gets its own
+     * window, so adding a new pipeline can never shorten an existing one's
+     * history.
+     *
+     * ── WHY IT IS STILL BOUNDED ────────────────────────────────────────────
+     *
+     * The cap is per pipeline and high enough to be invisible in practice -
+     * the busiest pipeline here reached 200 builds over several months. It is
+     * not removed altogether because this list is serialised into one HTTP
+     * response and rendered as one list: unbounded means the dashboard gets
+     * slower every week forever, which is a worse bug than the one being
+     * fixed and arrives too gradually to notice.
+     *
+     * Newest first, which is what stepEstimates documents that it needs.
+     */
+    public getRecentBuildsPerPipeline(perPipeline = 500): any[] {
+        const db = this.db.getDb();
+        return db.prepare(`
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY target ORDER BY started_at DESC
+                ) AS rn
+                FROM builds
+            )
+            WHERE rn <= ?
+            ORDER BY started_at DESC
+        `).all(perPipeline);
+    }
+
     public getBuild(id: string): any {
         const db = this.db.getDb();
         return db.prepare("SELECT * FROM builds WHERE id = ?").get(id);
