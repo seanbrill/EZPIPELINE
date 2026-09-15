@@ -12,7 +12,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw, Zap } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw } from 'lucide-react';
 import { EnvTag } from '../../components/Shared/EnvTag';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
@@ -1477,6 +1477,15 @@ const DashboardPage: React.FC = () => {
                                                                                 : step.status === 'running' ? '...' : '--'}
                                                                 </div>
 
+                                                                {/* NO BAR ON AN ACTION. A progress bar measures
+                                                                    something that runs for a while; an action is a
+                                                                    button that has not been pressed. Worse, the bar
+                                                                    fell through to the build's own status, so a
+                                                                    successful build drew a FULL GREEN bar under
+                                                                    "Promote to production" - which reads as "this
+                                                                    ran and succeeded" under the one control on the
+                                                                    page that had not been touched. */}
+                                                                {step.type !== 'action' && (
                                                                 <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
                                                                     {fraction !== null ? (
                                                                         <div
@@ -1493,6 +1502,7 @@ const DashboardPage: React.FC = () => {
                                                                             }`}></div>
                                                                     )}
                                                                 </div>
+                                                                )}
                                                             </>
                                                         );
                                                     })()}
@@ -1567,12 +1577,24 @@ const DashboardPage: React.FC = () => {
                                                                     title={blocked
                                                                         ? `Waiting on "${waitingOn!.name}" to finish`
                                                                         : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
-                                                                    className="w-full bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/50 px-2 py-1 text-[10px] uppercase tracking-wide rounded font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600/20"
+                                                                    // AN ICON, NOT THE NAME. The card's heading is
+                                                                    // already the step name, so the button repeated it
+                                                                    // directly underneath - and being the longest text
+                                                                    // in a 120px card, it wrapped to three lines and
+                                                                    // made the one actionable control the hardest
+                                                                    // thing on the card to read.
+                                                                    //
+                                                                    // Icon-only needs a name for anyone not looking at
+                                                                    // it, hence aria-label; `title` already carries
+                                                                    // what it will do, or why it cannot yet.
+                                                                    aria-label={blocked
+                                                                        ? `${step.name} - waiting on "${waitingOn!.name}"`
+                                                                        : step.name}
+                                                                    className="w-full bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/50 px-2 py-1.5 rounded transition-all flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600/20"
                                                                 >
                                                                     {running
-                                                                        ? <Loader className="w-3 h-3 animate-spin" />
-                                                                        : <Zap className="w-3 h-3" />}
-                                                                    {blocked ? 'Waiting' : step.name}
+                                                                        ? <Loader className="w-4 h-4 animate-spin" />
+                                                                        : <Play className="w-4 h-4 fill-current" />}
                                                                 </button>
                                                                 {blocked && (
                                                                     <p className="mt-1 text-[9px] leading-tight text-slate-500 text-center">
