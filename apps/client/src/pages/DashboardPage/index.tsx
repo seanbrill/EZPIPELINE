@@ -1057,7 +1057,28 @@ const DashboardPage: React.FC = () => {
     // moved, while the pipeline itself was handed the real build_number.
     //
     // The server has sent the real one all along, as `buildNumber`.
-    const filteredBuildHistory = buildHistory.filter(b => inSelectedGroup(b.group));
+    // ── THE TREE SELECTS A PIPELINE AND THIS LIST IGNORED IT ────────────
+    //
+    // Clicking a pipeline in the sidebar sets selectedPipelineForRun, and this
+    // filtered on the GROUP alone - so choosing a pipeline inside the group you
+    // were already in changed nothing at all. The tree highlighted the row, the
+    // run dropdown switched, and the history underneath carried on showing
+    // every pipeline in the group. Reported as the history "not updating and
+    // confusing", which is exactly right: the page had two controls claiming a
+    // selection and one list disagreeing with both.
+    //
+    // FILTERED, AND THEN SAID OUT LOUD. Narrowing silently is the other half of
+    // the same problem - a list that quietly holds one pipeline's builds looks
+    // identical to a group that only ever ran one. The heading below names what
+    // is being shown and offers a way back.
+    const selectedPipelineName = selectedPipelineForRun
+        ? pipelines.find(p => p.id === selectedPipelineForRun)?.name
+        : undefined;
+    const filteredBuildHistory = buildHistory.filter(
+        b =>
+            inSelectedGroup(b.group) &&
+            (!selectedPipelineForRun || b.pipelineId === selectedPipelineForRun)
+    );
 
     /**
      * How many build rows are actually rendered.
@@ -1278,9 +1299,31 @@ const DashboardPage: React.FC = () => {
                             <div>
                                 <h2 className="text-2xl font-bold text-white flex items-center gap-2">
                                     <Folder className="w-6 h-6 text-emerald-500" />
-                                    {selectedGroup ? `${selectedGroup} Pipelines` : 'Pipelines'}
+                                    {selectedPipelineName
+                                        ? selectedPipelineName
+                                        : selectedGroup
+                                            ? `${selectedGroup} Pipelines`
+                                            : 'Pipelines'}
                                 </h2>
-                                <p className="text-[var(--color-text-muted)] text-sm mt-1">Recent builds for this group</p>
+                                {/* THE SUBTITLE IS THE ESCAPE HATCH. A filtered
+                                    list that does not say it is filtered is the
+                                    bug this fixed, one step later - so the
+                                    narrower view names itself and offers the way
+                                    back in the same sentence. */}
+                                {selectedPipelineName ? (
+                                    <p className="text-[var(--color-text-muted)] text-sm mt-1">
+                                        Builds of this pipeline only.{" "}
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedPipelineForRun("")}
+                                            className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2"
+                                        >
+                                            Show the whole group
+                                        </button>
+                                    </p>
+                                ) : (
+                                    <p className="text-[var(--color-text-muted)] text-sm mt-1">Recent builds for this group</p>
+                                )}
                             </div>
                             <div className="flex items-center gap-2">
                                 {selectedGroup && (
