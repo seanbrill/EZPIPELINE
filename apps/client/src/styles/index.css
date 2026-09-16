@@ -120,3 +120,50 @@ body {
 
 /* Anything that opts into its own ring keeps it: :where() has zero
  * specificity, so a component rule beats this without !important. */
+
+/* ── AN ACTION THAT IS READY TO PRESS SHOULD SAY SO ─────────────────────────
+ *
+ * "Promote to production" sits on every build card and spends almost all of
+ * its life blocked, in amber. The moment the run finishes it turns green and
+ * becomes the one thing on the page worth pressing - and a colour change alone
+ * is easy to miss on a dashboard somebody has stopped watching, which is
+ * exactly when a deploy is waiting on a press nobody knows about.
+ *
+ * WHY NOT Tailwind's `animate-pulse`: it animates opacity on the whole
+ * element, fading the icon with it, which reads as "loading". That is the one
+ * meaning this button must not borrow - it sits inches from a spinner that
+ * genuinely means busy, and the two would be told apart only by shape.
+ *
+ * An expanding ring instead. It is drawn with box-shadow in `currentColor`, so
+ * it inherits the button's own emerald rather than pinning a second green that
+ * would drift from the first the next time either is touched, and it costs no
+ * layout - box-shadow does not affect the card's geometry, so nothing around
+ * the button moves as it breathes.
+ */
+@keyframes action-ready-glow {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 50%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, currentColor 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent);
+  }
+}
+
+.action-ready {
+  animation: action-ready-glow 2s ease-out infinite;
+}
+
+/* MOTION IS A PREFERENCE, NOT A DETAIL - and the information is not optional.
+ * Somebody who has asked their system to stop animating things still needs to
+ * know the button is ready, so the emphasis becomes a steady ring rather than
+ * vanishing along with the movement. Turning the animation off must not also
+ * turn the meaning off. */
+@media (prefers-reduced-motion: reduce) {
+  .action-ready {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 40%, transparent);
+  }
+}

@@ -1665,6 +1665,12 @@ const DashboardPage: React.FC = () => {
                                                             && !!build.id
                                                             && latestBuildPerPipeline.get(build.pipelineId) !== build.id;
                                                         const blocked = !!waitingOn || superseded;
+                                                        // READY MEANS PRESSABLE RIGHT NOW, which is narrower
+                                                        // than "not blocked": a button already running, or one
+                                                        // with nothing configured, is green and does nothing.
+                                                        // Flashing either would be an invitation to press a
+                                                        // control that has no effect.
+                                                        const ready = !blocked && !running && chain.length > 0;
                                                         return (
                                                             <div className="mt-3">
                                                                 <button
@@ -1721,11 +1727,20 @@ const DashboardPage: React.FC = () => {
                                                                     // "this is the button, it is just dim"; amber reads
                                                                     // as a state - the same colour this dashboard
                                                                     // already uses for a step that needs attention.
+                                                                    // THE FLASH IS ONLY ON THE READY STATE. The
+                                                                    // colour change from amber to green already says
+                                                                    // it, but this button spends most of its life
+                                                                    // blocked and the change lands on a dashboard
+                                                                    // nobody is necessarily watching - so a deploy
+                                                                    // can sit waiting on a press that nobody knows
+                                                                    // is available. The ring is defined in
+                                                                    // styles/index.css and stops animating, without
+                                                                    // going away, under prefers-reduced-motion.
                                                                     className={`w-full px-2 py-1.5 rounded transition-all flex items-center justify-center border ${
                                                                         blocked
                                                                             ? "bg-amber-500/10 text-amber-400/80 border-amber-500/40 cursor-help hover:bg-amber-500/20"
                                                                             : "bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border-emerald-500/50"
-                                                                    } disabled:opacity-40 disabled:cursor-not-allowed`}
+                                                                    } ${ready ? "action-ready" : ""} disabled:opacity-40 disabled:cursor-not-allowed`}
                                                                 >
                                                                     {running
                                                                         ? <Loader className="w-4 h-4 animate-spin" />
