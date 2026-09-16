@@ -1486,7 +1486,12 @@ const DashboardPage: React.FC = () => {
                                                     step.status === 'success' ? 'bg-slate-900 border-emerald-900/50' :
                                                         step.status === 'failed' ? 'bg-red-950/20 border-red-500/50 shadow-sm shadow-red-500/10' :
                                                             step.status === 'error' ? 'bg-amber-950/20 border-amber-500/50 shadow-sm shadow-amber-500/10' :
-                                                                'bg-slate-900/50 border-slate-800 opacity-60'
+                                                                // ABORTED LOOKS STOPPED. No accent border and no
+                                                                // glow: the whole complaint was that a stopped
+                                                                // build's gate still looked like it wanted
+                                                                // something from you.
+                                                                step.status === 'aborted' ? 'bg-slate-900/50 border-slate-700 opacity-60' :
+                                                                    'bg-slate-900/50 border-slate-800 opacity-60'
                                                     }`}>
                                                     <div className="flex items-center justify-between mb-2">
                                                         <span className={`text-sm font-medium ${step.status === 'running' ? 'text-blue-400' :
@@ -1497,6 +1502,10 @@ const DashboardPage: React.FC = () => {
                                                             }`}>{step.name}</span>
 
                                                         {step.status === 'running' && <Loader className="w-3 h-3 text-blue-500 animate-spin" />}
+                                                        {/* A SQUARE, not a spinner and not a cross. "Stopped"
+                                                            is its own outcome: a cross would read as failure
+                                                            for a build somebody deliberately halted. */}
+                                                        {step.status === 'aborted' && <Square className="w-3 h-3 text-slate-500" />}
                                                         {step.status === 'success' && <CheckCircle className="w-3 h-3 text-emerald-500" />}
                                                         {step.status === 'failed' && <XCircle className="w-3 h-3 text-red-500" />}
                                                         {step.status === 'error' && <AlertTriangle className="w-3 h-3 text-amber-500" />}
@@ -1555,7 +1564,8 @@ const DashboardPage: React.FC = () => {
                                                                             // step that was skipped. It says what it IS:
                                                                             // a button that waits on a finished build.
                                                                             : step.type === 'action' ? 'on demand'
-                                                                                : step.status === 'running' ? '...' : '--'}
+                                                                                : step.status === 'running' ? '...'
+                                                                                    : step.status === 'aborted' ? 'stopped' : '--'}
                                                                 </div>
 
                                                                 {/* NO BAR ON AN ACTION. A progress bar measures
@@ -1579,7 +1589,12 @@ const DashboardPage: React.FC = () => {
                                                                             step.status === 'success' ? 'bg-emerald-500 w-full' :
                                                                                 step.status === 'failed' ? 'bg-red-500 w-full' :
                                                                                     step.status === 'error' ? 'bg-amber-500 w-full' :
-                                                                                        'w-0'
+                                                                                        // NO animate-pulse. A pulsing bar is
+                                                                                        // the loudest "still working" signal
+                                                                                        // on the card, and it was the one
+                                                                                        // left running under a stopped build.
+                                                                                        step.status === 'aborted' ? 'bg-slate-600 w-full' :
+                                                                                            'w-0'
                                                                             }`}></div>
                                                                     )}
                                                                 </div>

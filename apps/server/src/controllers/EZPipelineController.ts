@@ -103,7 +103,14 @@ export interface BuildStepHistory {
    * which run is newest, so it needs nothing else to work this out.
    */
   requireLatestBuild?: boolean;
-  status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error';
+  /**
+   * 'aborted' is the step the build was ON when somebody stopped it.
+   *
+   * Distinct from 'failed', which says something went wrong, and from
+   * 'running', which it used to be reported as - leaving a stopped build's
+   * approval gate spinning as though it were still waiting for a click.
+   */
+  status: 'success' | 'failed' | 'running' | 'pending' | 'skipped' | 'error' | 'aborted';
   startTime?: Date;
   endTime?: Date;
   duration?: number; // in milliseconds
@@ -275,7 +282,7 @@ export default class EZPipelineController extends EventEmitter {
         })),
         duration: totalDuration,
         steps: pipeline ? pipeline.steps.map((s, index) => {
-          let stepStatus: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'error' = 'pending';
+          let stepStatus: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'error' | 'aborted' = 'pending';
           const activeIndex = activeStepName ? pipeline.steps.findIndex(step => step.name === activeStepName) : -1;
 
           if (b.status === 'success') {
@@ -286,7 +293,19 @@ export default class EZPipelineController extends EventEmitter {
               else if (index === activeIndex) {
                 if (b.status === 'failed') stepStatus = 'failed';
                 else if (b.status === 'error') stepStatus = 'error';
-                else if (b.status === 'paused' && s.type === 'approval') stepStatus = 'running';
+                // ABORTED IS NOT RUNNING, and it used to fall through to the
+                // `else` below and be reported as exactly that. The step the
+                // build died on kept its blue border, its spinner and its
+                // pulsing bar, so a stopped deployment's approval gate sat
+                // there looking like it was still waiting for somebody to
+                // press it. Sean's report: "aborted pipeline approval gate
+                // looks like its waiting for me".
+                //
+                // The client already refused to run the CLOCK on a build that
+                // is not live, which is why the elapsed time was right while
+                // everything around it was wrong. That guard was compensating
+                // for this mapping; this is the mapping being correct.
+                else if (b.status === 'aborted') stepStatus = 'aborted';
                 else stepStatus = 'running';
               } else {
                 stepStatus = 'pending';
