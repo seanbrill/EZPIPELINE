@@ -79,6 +79,18 @@ describe("what was there before still works", () => {
         assert.equal(statusToWrite({ error: "boom" }), 'failed');
     });
 
+    test("a real abort - error AND flag together - lands aborted", () => {
+        // THE COMBINATION THAT ACTUALLY OCCURS. Abort kills the step's process
+        // group; the step rejects; build_error reports both the error and the
+        // flag on one call. Every real abort looks like this, and no test
+        // asked about it - each flag was only ever checked on its own, so the
+        // suite stayed green while every aborted build was recorded 'failed'.
+        assert.equal(
+            statusToWrite({ error: "Command was stopped (SIGTERM)", isAborted: true, status: 'aborted' }),
+            'aborted',
+        );
+    });
+
     test("an abort alone infers aborted", () => {
         assert.equal(statusToWrite({ isAborted: true }), 'aborted');
     });

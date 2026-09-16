@@ -15,12 +15,29 @@ import { v4 as uuidv4 } from 'uuid';
  * else defers to what the caller actually said, and only then falls back to
  * inferring success from a completed percentage.
  *
+ * ── WHY isAborted IS CHECKED BEFORE error ────────────────────────────────
+ *
+ * Because an aborted build ALWAYS carries an error too. Abort kills the step's
+ * process group, the step rejects with "Command was stopped (SIGTERM)", and
+ * build_error reports it. So the two outcomes are not alternatives to choose
+ * between - on every real abort BOTH are set, and the error is a consequence
+ * of the abort rather than an independent fact about it.
+ *
+ * With `error` first, every deliberate abort was recorded as 'failed'. That
+ * defeated the guard in build_error, which goes to the trouble of detecting
+ * the abort and passing status 'aborted' - and then loses to this function one
+ * layer down. Two correct-looking halves, the wrong answer between them.
+ *
+ * The old tests missed it by checking each flag ALONE: `{error}` -> failed and
+ * `{isAborted, status}` -> aborted both passed, and the pair that actually
+ * occurs was never asked about.
+ *
  * Returning undefined means "do not write a status", which is not the same as
  * writing one and is why this returns a value rather than a string.
  */
 export function statusToWrite(updates: Record<string, any>): string | undefined {
-    if (updates.error) return 'failed';
     if (updates.isAborted) return 'aborted';
+    if (updates.error) return 'failed';
     if (updates.status !== undefined) return updates.status;
     if (updates.percentage && updates.percentage >= 100) return 'success';
     return undefined;

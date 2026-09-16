@@ -895,9 +895,13 @@ export default class EZPipelineController extends EventEmitter {
     build.error = error.message;
 
     if (build.isAborted) {
+      // isAborted travels WITH the update, not just as a status: statusToWrite
+      // decides from the fields it is given, and an `error` alone reads as a
+      // failure. Passing the flag is what makes the status survive the write.
       this.buildService.updateBuild(build.id, {
         error: error.message,
         ended: build.ended,
+        isAborted: true,
         status: 'aborted',
       });
       return;
