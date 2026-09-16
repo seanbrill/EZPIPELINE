@@ -41,6 +41,28 @@ const MIN_POLL_SECONDS = 15;
  * Deliberately not webhooks: this server usually has no inbound route from the
  * internet, so the forge cannot reach it. See migrations/008_git_watches.ts.
  */
+/**
+ * Which build statuses mean "this commit is already handled".
+ *
+ * Pulled out and exported so the RULE can be tested without opening the real
+ * builds table - the same reason statusToWrite lives outside updateBuild, and
+ * for the same reason: a test that can corrupt live build history is worse
+ * than no test.
+ *
+ * THE OMISSIONS ARE THE POINT. `failed` and `aborted` are deliberately absent.
+ * A failed build is an attempt, not an outcome, and counting it as done would
+ * mean a watch could never retry a commit after somebody fixed whatever broke
+ * it - which is precisely when a retry is wanted. `paused` counts because a
+ * build waiting at an approval gate is work in progress that somebody is about
+ * to decide on, and starting a second one beside it helps nobody.
+ */
+export const BUILT_STATUSES = ["running", "paused", "success"] as const;
+
+/** Does a build in this status mean the commit needs no further run? */
+export function shaCountsAsBuilt(status: string): boolean {
+    return (BUILT_STATUSES as readonly string[]).includes(status);
+}
+
 export class GitWatchService {
     private static _instance: GitWatchService | null = null;
     private timer: NodeJS.Timeout | null = null;
@@ -199,6 +221,42 @@ export class GitWatchService {
             );
         }
 
+        // ── THIS COMMIT MAY ALREADY HAVE BEEN DEPLOYED ON PURPOSE ────────
+        //
+        // The promote action does two things in order: merge develop into main,
+        // then run the production pipeline. The merge MOVES THE BRANCH THIS
+        // WATCH IS WATCHING, so one press produces two deploys of the same
+        // commit - the one somebody asked for, and one this poller adds a few
+        // seconds later.
+        //
+        // The existing isBuilding() guard does not prevent it, it only delays
+        // it: the tick returns without recording the sha, so the next tick
+        // starts the duplicate once the first run finishes. Every promote has
+        // been costing a second full deployment of an identical sha.
+        //
+        // Asking whether this pipeline has ALREADY built this commit is the
+        // honest test. It is not "was a build started recently" - a rebuild of
+        // a different commit is exactly what a watch is for - it is "is there
+        // nothing here to do", and when the answer is yes the sha is adopted so
+        // the next tick does not ask again.
+        //
+        // A FAILED build of this sha does NOT count. Somebody pushing the same
+        // commit again, or a watch re-checking after a fix elsewhere, is asking
+        // for a retry, and refusing it because the last attempt failed would be
+        // the worst possible reading of "already done".
+        if (this.hasBuiltSha(w.pipeline_target, sha)) {
+            this.logger.info(
+                `Git watch ${w.id}: ${w.branch} is at ${sha.slice(0, 12)}, which ` +
+                `${w.pipeline_target} has already built. Adopting the sha without running.`
+            );
+            db.prepare(
+                `UPDATE git_watches
+                 SET last_sha = ?, last_checked_at = ?, last_error = NULL
+                 WHERE id = ?`
+            ).run(sha, now, w.id);
+            return;
+        }
+
         if (this.isBuilding(w.pipeline_target)) {
             this.logger.info(
                 `Git watch ${w.id}: ${w.branch} moved to ${sha.slice(0, 12)}, but a build of ` +
@@ -292,6 +350,26 @@ export class GitWatchService {
             this.logger.warn(`Git watch could not abort superseded paused builds: ${e}`);
             return 0;
         }
+    }
+
+    /**
+     * Has this pipeline already built this exact commit?
+     *
+     * Running or succeeded counts; failed and aborted do not. A failed build is
+     * an attempt, not an outcome, and treating it as "done" would mean a watch
+     * could never retry a commit after somebody fixed whatever broke it.
+     */
+    private hasBuiltSha(target: string, sha: string): boolean {
+        const db = this.db.getDb();
+        const placeholders = BUILT_STATUSES.map(() => "?").join(", ");
+        const row = db
+            .prepare(
+                `SELECT count(*) AS c FROM builds
+                  WHERE target = ? AND commit_sha = ?
+                    AND status IN (${placeholders})`
+            )
+            .get(target, sha, ...BUILT_STATUSES) as { c: number };
+        return row.c > 0;
     }
 
     private isBuilding(pipelineTarget: string): boolean {
