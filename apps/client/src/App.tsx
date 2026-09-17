@@ -9,6 +9,7 @@ import SetupPage from './pages/SetupPage';
 import DocsPage from './pages/DocsPage';
 
 import { Settings, LogOut, LayoutDashboard, Book } from 'lucide-react';
+import appVersion from 'virtual:app-version';
 import './styles/index.css';
 import React, { useEffect, useState } from 'react';
 import AIAssistant from './components/AIAssistant';
@@ -82,11 +83,33 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <Link to="/settings" className="hover:text-[var(--color-text)] flex items-center gap-2"><Settings size={16} /> Settings</Link>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
-          <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
-            <LogOut size={18} />
-          </button>
+        {/* ── THE BUILD STAMP ──────────────────────────────────────────────
+            Under the sign out button, small, and deliberately dull. It is not
+            a feature: it is the answer to "is this page running the change I
+            just made", which took most of an evening to establish once by
+            other means.
+
+            `bN` is a build number that goes up whenever HEAD moves. It is NOT
+            a commit count and the title says so - counting commits properly
+            means walking packfiles, and a number that is almost a commit count
+            invites being read as one. The short commit beside it is the half
+            that can be checked against git.
+
+            The stamp comes from a virtual module vite re-evaluates whenever a
+            ref changes, so it cannot sit there going quietly out of date. */}
+        <div className="flex flex-col items-end gap-0.5">
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
+            <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
+              <LogOut size={18} />
+            </button>
+          </div>
+          <span
+            className="text-[10px] leading-none text-[var(--color-text-muted)] opacity-60 font-mono"
+            title={`Build ${appVersion.build} on ${appVersion.branch} at commit ${appVersion.commit}. The build number counts movements of HEAD, so it rises on every commit - it is not a count of commits. If this has not changed since a push, the page is not running it.`}
+          >
+            b{appVersion.build} · {appVersion.commit}
+          </span>
         </div>
       </nav>
 
