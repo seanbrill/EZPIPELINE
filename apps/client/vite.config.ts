@@ -110,24 +110,32 @@ function appVersionPlugin() {
       return `export default ${JSON.stringify(stamp)};`;
     },
     configureServer(server: any) {
-      const gitDir = path.resolve(__dirname, '../../.git');
-      // HEAD and the reflog cover a commit, a checkout and a reset. The refs
-      // directory covers a branch moving under us, which is what a push to
-      // main from elsewhere looks like from in here.
-      const watched = [
-        path.join(gitDir, 'HEAD'),
-        path.join(gitDir, 'logs', 'HEAD'),
-        path.join(gitDir, 'refs', 'heads'),
-      ];
-      server.watcher.add(watched);
-      const refresh = (file: string) => {
-        if (!file.startsWith(gitDir)) return;
+      // ── POLLED, BECAUSE THE WATCHER CANNOT SEE THIS ────────────────────
+      //
+      // The first version added .git to vite's own watcher and invalidated on
+      // change. It did nothing, and the test that caught it was simply making
+      // a commit and asking the dev server what it thought the stamp was: the
+      // repository had moved to b80 and the module still served b79.
+      //
+      // Two reasons, either of which is enough. Vite ignores **/.git/** by
+      // default, so the paths were added to a watcher that discards them. And
+      // this runs in a container reading a macOS bind mount, where inotify
+      // events are not delivered reliably whatever the watcher is told.
+      //
+      // Polling two small files every few seconds is not elegant and it does
+      // work. It is also the cheapest thing in this process by a wide margin.
+      let last = JSON.stringify(readGitStamp(__dirname));
+      const timer = setInterval(() => {
+        const now = JSON.stringify(readGitStamp(__dirname));
+        if (now === last) return;
+        last = now;
         const mod = server.moduleGraph.getModuleById('\0' + VERSION_MODULE);
         if (mod) server.moduleGraph.invalidateModule(mod);
         server.ws.send({ type: 'full-reload' });
-      };
-      server.watcher.on('change', refresh);
-      server.watcher.on('add', refresh);
+      }, 3000);
+      // Or the dev server cannot exit.
+      timer.unref?.();
+      server.httpServer?.once('close', () => clearInterval(timer));
     },
   };
 }
