@@ -89,15 +89,20 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             just made", which took most of an evening to establish once by
             other means.
 
-            `bN` is a build number that goes up whenever HEAD moves. It is NOT
-            a commit count and the title says so - counting commits properly
-            means walking packfiles, and a number that is almost a commit count
-            invites being read as one. The short commit beside it is the half
-            that can be checked against git.
+            ── WHY THE ROW IS A GRID AND NOT TWO STACKED FLEX BOXES ─────────
 
-            The stamp comes from a virtual module vite re-evaluates whenever a
-            ref changes, so it cannot sit there going quietly out of date. */}
-        <div className="flex flex-col items-end gap-0.5">
+            Both lines have to end on the same pixel, and `items-end` on a
+            column does not give that: it right-aligns each child against the
+            column, whose width is set by the WIDER of them. The version line
+            is much the narrower, so the row decided the width and the version
+            sat against the row's edge - which is the icon's box, not the
+            icon's glyph, and the two read as misaligned by exactly the
+            button's inner padding.
+
+            justify-end on both grid rows aligns them to the same right edge,
+            and the negative margin on the version pulls it back under the
+            glyph rather than under the button's padding. */}
+        <div className="grid justify-items-end gap-0.5">
           <div className="flex items-center gap-4">
             <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
             <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
@@ -105,10 +110,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             </button>
           </div>
           <span
-            className="text-[10px] leading-none text-[var(--color-text-muted)] opacity-60 font-mono"
-            title={`Build ${appVersion.build} on ${appVersion.branch} at commit ${appVersion.commit}. The build number counts movements of HEAD, so it rises on every commit - it is not a count of commits. If this has not changed since a push, the page is not running it.`}
+            className="text-[10px] leading-none font-mono text-[var(--color-text-muted)] opacity-60 -mt-0.5 mr-[2px]"
+            title={`${appVersion.version} on ${appVersion.branch}, commit ${appVersion.commit}. The number rises every time the code moves, so if it has not changed since a push, this page is not running it.`}
           >
-            b{appVersion.build} · {appVersion.commit}
+            {appVersion.version}
           </span>
         </div>
       </nav>

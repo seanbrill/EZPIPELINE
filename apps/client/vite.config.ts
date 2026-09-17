@@ -63,9 +63,9 @@ try {
 // always the code being served.
 const VERSION_MODULE = 'virtual:app-version';
 
-function readGitStamp(root: string): { build: number; commit: string; branch: string } {
+function readGitStamp(root: string): { build: number; version: string; commit: string; branch: string } {
   const gitDir = path.resolve(root, '../../.git');
-  const out = { build: 0, commit: 'unknown', branch: 'unknown' };
+  const out = { build: 0, version: 'v0.0.0', commit: 'unknown', branch: 'unknown' };
   try {
     const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
     const ref = head.startsWith('ref: ') ? head.slice(5).trim() : null;
@@ -91,6 +91,20 @@ function readGitStamp(root: string): { build: number; commit: string; branch: st
     if (fs.existsSync(reflog)) {
       out.build = fs.readFileSync(reflog, 'utf-8').split('\n').filter(Boolean).length;
     }
+
+    // ── AND IT READS AS A VERSION, BECAUSE THAT IS WHAT IT IS FOR ──────────
+    //
+    // `b81` was accurate and unfriendly. The whole job of this string is to be
+    // glanced at and compared with the one from a minute ago, and v1.0.81 ->
+    // v1.0.82 does that with no explanation attached.
+    //
+    // NO ROLLOVER AT 100. Making the patch wrap into the minor would look
+    // tidier - v1.1.0 after v1.0.99 - and it would put a 99 next to a 0 and
+    // ask the reader to know the rule before they can tell which is newer. A
+    // number that only ever goes up needs no rule. v1.0.147 is uglier than
+    // v1.1.47 and it is never ambiguous, which matters more for something
+    // whose entire purpose is answering "did it change".
+    out.version = `v1.0.${out.build}`;
   } catch {
     // A stamp that cannot be read says so in the corner. It must never be the
     // reason the application fails to build.
