@@ -526,11 +526,44 @@ const DashboardPage: React.FC = () => {
         }
     };
 
+    /**
+     * Re-read the history whenever the selected group changes.
+     *
+     * ── THE ACTUAL BUG BEHIND "THE HISTORY IS NOT ADAPTING" ─────────────────
+     *
+     * fetchBuildHistory sends `?group=<selected>` and the server filters on it
+     * properly, descendants included. But the only effect that called it
+     * depended on [token], so it ran ONCE at mount and never again. Every later
+     * click changed which group the client filtered by while the data underneath
+     * stayed whatever the group at mount had asked for.
+     *
+     * That is why the symptoms looked contradictory. Selecting Notch.fm showed
+     * only Prod runs, because Prod was the group restored from localStorage at
+     * mount and the fetch had asked for Prod alone. Selecting Dev showed NOTHING,
+     * because the client then filtered that Prod-only list for Dev. And a page
+     * refresh "fixed" it because a refresh re-mounts, which re-fetches, with
+     * whatever group was persisted.
+     *
+     * ── ITS OWN EFFECT, NOT A DEPENDENCY ON THE ONE ABOVE ───────────────────
+     *
+     * Adding selectedGroup to that effect's deps would tear down and rebuild the
+     * EventSource on every click in the tree, which is a live SSE connection
+     * carrying running-build output. Changing which builds you are looking at
+     * must not drop the stream that fills them.
+     */
     useEffect(() => {
         if (!token) return;
-        // Initial fetch for pipelines and build history
-        fetchPipelines();
         fetchBuildHistory();
+        // fetchBuildHistory is redefined every render, so it is deliberately
+        // not a dependency: naming it here is an infinite refetch loop.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [token, selectedGroup]);
+
+    useEffect(() => {
+        if (!token) return;
+        // Initial fetch for pipelines. The history is the effect above, which
+        // also covers mount - it runs with the group restored from storage.
+        fetchPipelines();
 
         // A TICKET, not the session token.
         //
