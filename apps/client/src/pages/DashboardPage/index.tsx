@@ -996,6 +996,42 @@ const DashboardPage: React.FC = () => {
      * group, so arming one filed somewhere else would set a value the picker
      * cannot display: a Run button aimed at a name nobody can see.
      */
+    /**
+     * Pick a GROUP from the tree.
+     *
+     * ── IT HAS TO LET GO OF THE PIPELINE, AND THE LAST FIX FORGOT TO ────────
+     *
+     * The build list filters on the selected group AND, since pipeline
+     * selection started narrowing it, on the armed pipeline. Nothing cleared
+     * that pipeline when the group changed, so navigating from one group to
+     * another left a filter pinned to a pipeline that is not in the new group -
+     * and the two conditions together match nothing.
+     *
+     * What that looks like is the bug as reported: "as I click on the different
+     * groups the pipeline history is not adapting, says no build history".
+     * Empty, not stale, and NOT explained by the heading either: the heading
+     * looks up the armed pipeline by id, does not find it in the new group, and
+     * falls back to the group name. So the page says "Notch.fm/Prod Pipelines"
+     * over an empty list while Prod has a fortnight of builds.
+     *
+     * It also explains why clicking a pipeline fixed it: that arms one which IS
+     * in the group, so the filter starts matching again.
+     *
+     * CLEARED ONLY WHEN IT NO LONGER APPLIES. Blanking it on every group click
+     * would throw away a deliberate Quick Run arming when somebody merely
+     * clicks the group that pipeline lives in - which is the normal way to
+     * navigate to it.
+     */
+    const handleSelectGroup = (group: string | undefined) => {
+        setSelectedGroup(group);
+        if (!selectedPipelineForRun) return;
+        const armed = pipelines.find(p => p.id === selectedPipelineForRun);
+        const stillApplies =
+            group === undefined ||
+            (armed && ((armed.group || "") === group || (armed.group || "").startsWith(group + "/")));
+        if (!stillApplies) setSelectedPipelineForRun('');
+    };
+
     const handleSelectPipeline = (path: string) => {
         const found = pipelineAtPath(path);
         if (!found) return;
@@ -1144,7 +1180,7 @@ const DashboardPage: React.FC = () => {
                             <FileTreeSidebar
                                 fileTree={fileTree}
                                 selectedGroup={selectedGroup || ''}
-                                onSelectGroup={setSelectedGroup}
+                                onSelectGroup={handleSelectGroup}
                                 onSelectPipeline={handleSelectPipeline}
                                 onOpenPipeline={handleOpenPipeline}
                                 onCreateGroup={createGroup}
