@@ -167,3 +167,46 @@ body {
     box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 40%, transparent);
   }
 }
+
+/* ── A COLLAPSED RUN THAT NEEDS SOMETHING FROM YOU ──────────────────────────
+ *
+ * When a card is collapsed, its one bar is the only thing left saying what the
+ * run is doing - the step that is parked on an approval gate is not on screen
+ * to draw its own Approve button. So the bar has to carry that meaning by
+ * itself, from across a room, on a dashboard nobody is watching.
+ *
+ * A BRIGHTNESS FLASH rather than the expanding ring `.action-ready` uses. That
+ * one breathes outward into the space around a button; this element is a 6px
+ * bar sitting flush inside a card, with no space around it to breathe into,
+ * and a ring drawn there collides with the card's own border. Flashing the
+ * bar's own fill keeps the motion inside the shape that carries the meaning.
+ *
+ * NOT `animate-pulse`, for the reason given above: fading an element in and
+ * out reads as "loading", and this bar sits a few pixels from a spinner that
+ * genuinely means busy.
+ */
+@keyframes run-attention-flash {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.3;
+    filter: brightness(1.5);
+  }
+}
+
+.run-attention {
+  animation: run-attention-flash 1.1s ease-in-out infinite;
+}
+
+/* The same bargain the note above makes: switch the movement off, keep the
+ * meaning. A steady bright amber still reads as "this one is different from
+ * the others" in a list where every other bar is blue, green or grey. */
+@media (prefers-reduced-motion: reduce) {
+  .run-attention {
+    animation: none;
+    filter: brightness(1.35);
+  }
+}

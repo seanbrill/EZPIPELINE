@@ -12,7 +12,7 @@ import Terminal from '../../components/Terminal';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw } from 'lucide-react';
+import { Play, Folder, Plus, Trash2, CheckCircle, Loader, XCircle, Circle, Square, Clock, AlertTriangle, Copy, Settings, ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Key, PauseCircle, LayoutGrid, FileText, GitCommit, RotateCcw } from 'lucide-react';
 import { EnvTag } from '../../components/Shared/EnvTag';
 import { io, Socket } from 'socket.io-client';
 import API_URL from '../../config/api';
@@ -170,6 +170,149 @@ const RUN_CTRL_H = "h-7";
  * scanning the page wants; the nine subjects are what they want after they have
  * decided this is the run they are looking at.
  */
+/**
+ * Whether a run is parked waiting for a person, and on which step.
+ *
+ * DERIVED THE SAME WAY THE APPROVE BUTTON IS, deliberately. The button renders
+ * when the build is running or paused, the step is the active one, and its
+ * declared type is 'approval'. If this used a looser rule - "status is paused"
+ * - a collapsed card would flash for runs with no button waiting on them, and
+ * a flash that sometimes means nothing is a flash people learn to ignore.
+ */
+function awaitingPerson(build: BuildHistoryEntry): string | null {
+    if (build.status !== 'paused' && build.status !== 'running') return null;
+    const step = (build.steps ?? []).find(
+        s => s.name === build.activeStep && s.type === 'approval'
+    );
+    return step ? step.name : null;
+}
+
+/**
+ * One bar standing in for every step of a run, for a card whose steps are
+ * collapsed out of view.
+ *
+ * ── WHY SEGMENTS AND NOT A SINGLE FILLED TRACK ─────────────────────────────
+ *
+ * A single fill can only say how FAR along a run is. This has to say how far
+ * along AND whether anything went wrong, because when the card is collapsed
+ * there is nothing else on screen that can: a run that failed at step 4 of 23
+ * and a run cleanly waiting at step 4 of 23 would draw the identical bar.
+ *
+ * One segment per step, coloured by that step's own status, is still read as
+ * a single bar at a glance - and up close it is a map of the run. The failed
+ * segment sits where the failure happened rather than being averaged away.
+ *
+ * ── THE THREE THINGS IT MUST SAY WITHOUT BEING CLICKED ─────────────────────
+ *
+ *   failed     the track turns red, and the segment that failed is red
+ *   waiting    the bar flashes amber - somebody has to press something
+ *   running    the live segment fills against its own estimate
+ *
+ * The running segment borrows stepProgress, which is the same estimate the
+ * expanded step card draws, so collapsing a card never changes what the
+ * progress is claimed to be. Its honesty notes apply here unchanged: no
+ * history means an indeterminate segment rather than an invented number.
+ */
+function RunProgressBar({ build, now }: { build: BuildHistoryEntry; now: number }) {
+    const steps = build.steps ?? [];
+    const waitingOn = awaitingPerson(build);
+    const failed = build.status === 'failed' || build.status === 'error';
+
+    // A run whose steps never arrived. Drawing an empty track would say
+    // "nothing has happened yet", which is a claim about the run rather than
+    // about what is known of it.
+    if (steps.length === 0) {
+        return (
+            <div className="h-1.5 rounded-full bg-slate-800/80" title="No steps recorded for this run" />
+        );
+    }
+
+    const done = steps.filter(s => s.status === 'success').length;
+    const buildLive = build.status === 'running' || build.status === 'paused';
+
+    return (
+        <div className="flex items-center gap-3">
+            <div
+                /* THE FLASH IS ON THE WORK THAT HAS NOT HAPPENED, not on the
+                   whole bar. Flashing the container took the completed green
+                   segments down with it, so at the dim end of the cycle a run
+                   that had done nineteen steps looked like it had done none -
+                   the movement cost the very information the bar exists to
+                   carry, and read as a rendering fault rather than a prompt.
+                   Now the finished segments stay solid, the gate and the
+                   steps still ahead of it flash amber, and the eye is pulled
+                   to where the run actually stopped. */
+                className={`flex h-1.5 flex-1 gap-px overflow-hidden rounded-full ${
+                    failed ? 'bg-red-950' : waitingOn ? 'bg-amber-950/70' : 'bg-slate-800'
+                }`}
+                role="img"
+                aria-label={
+                    waitingOn
+                        ? `Waiting for approval on ${waitingOn}. ${done} of ${steps.length} steps complete.`
+                        : `${done} of ${steps.length} steps complete, ${build.status}.`
+                }
+            >
+                {steps.map((step, idx) => {
+                    // The gate that is holding the run wears the attention
+                    // colour itself, so expanding the card leads the eye
+                    // straight to the step the flash was about.
+                    const isWaiting = waitingOn !== null && step.name === waitingOn;
+                    const running = step.status === 'running' && buildLive;
+                    const fraction = running ? stepProgress(step.estimatedDuration, step.startedAt, now) : null;
+
+                    // Ahead of a gate that is holding the run: amber and
+                    // flashing, so the pulse is a region rather than one
+                    // four-percent sliver nobody notices on a 23 step run.
+                    const pending = step.status === 'pending';
+                    let fill = waitingOn && pending ? 'bg-amber-500/30 run-attention' : 'bg-slate-700/40';
+                    if (isWaiting) fill = 'bg-amber-400 run-attention';
+                    else if (step.status === 'success') fill = 'bg-emerald-500';
+                    else if (step.status === 'failed') fill = step.continueOnError ? 'bg-amber-500' : 'bg-red-500';
+                    else if (step.status === 'error') fill = 'bg-amber-500';
+                    else if (step.status === 'aborted') fill = 'bg-slate-600';
+                    else if (running) fill = 'bg-blue-500';
+
+                    // An estimate exists, so the segment fills against it
+                    // rather than sitting solid the whole time it runs.
+                    if (running && !isWaiting && fraction !== null) {
+                        return (
+                            <div
+                                key={idx}
+                                className="relative flex-1 bg-slate-700/40"
+                                title={`${step.name} - running`}
+                            >
+                                <div
+                                    className="absolute inset-y-0 left-0 bg-blue-500 transition-[width] duration-1000 ease-linear"
+                                    style={{ width: `${Math.round(fraction * 100)}%` }}
+                                />
+                            </div>
+                        );
+                    }
+
+                    return (
+                        <div
+                            key={idx}
+                            className={`flex-1 ${fill} ${running && !isWaiting ? 'animate-pulse' : ''}`}
+                            title={`${step.name}${step.status ? ` - ${step.status}` : ''}`}
+                        />
+                    );
+                })}
+            </div>
+
+            {/* The count in words, because a bar of 23 thin segments is a
+                shape rather than a number, and "17 / 23" is the thing worth
+                reading out loud. */}
+            <span
+                className={`shrink-0 font-mono text-[11px] tabular-nums ${
+                    failed ? 'text-red-400' : waitingOn ? 'text-amber-300' : 'text-slate-500'
+                }`}
+            >
+                {waitingOn ? 'needs you' : `${done}/${steps.length}`}
+            </span>
+        </div>
+    );
+}
+
 function RunProvenance({
     build,
     onRollback,
@@ -325,6 +468,25 @@ const DashboardPage: React.FC = () => {
         () => readSelection().pipeline || ''
     );
     const [logsExpanded, setLogsExpanded] = useState(false);
+
+    /* ── WHICH RUNS ARE SHOWING THEIR STEPS ─────────────────────────────────
+     *
+     * COLLAPSED IS THE DEFAULT, and the set below holds the exceptions. A
+     * provision pipeline draws twenty-three step cards at seven-and-a-half
+     * rems each; a handful of runs is already several screens of scrolling
+     * before the one being looked for is on it. The condensed bar says which
+     * run failed, which is waiting, and how far the rest got, which is what
+     * the list is being scanned for in the first place.
+     *
+     * Storing the EXPANDED ids rather than the collapsed ones matters: a run
+     * this browser has never seen - one that finished while the tab was shut,
+     * which is most of them - is absent from the set and therefore collapsed,
+     * without anything having to write an entry for it first.
+     */
+    const [expandedBuilds, setExpandedBuilds] = useState<string[]>(
+        () => readJSON<string[]>('ezpipeline.expandedBuilds', [])
+    );
+    const expandedSet = useMemo(() => new Set(expandedBuilds), [expandedBuilds]);
     /** Which build is mid-rollback, so its button alone shows it. */
     const [rollingBack, setRollingBack] = useState<string | null>(null);
     /** Which anytime action is in flight, as "<buildId>:<stepName>". */
@@ -1212,6 +1374,40 @@ const DashboardPage: React.FC = () => {
     const PAGE = 10;
     const [visibleBuilds, setVisibleBuilds] = useState(PAGE);
     const visibleBuildHistory = filteredBuildHistory.slice(0, visibleBuilds);
+
+    /* ── EXPANDING AND COLLAPSING ───────────────────────────────────────────
+     *
+     * The stored list is PRUNED to the runs currently known on every write.
+     * Without that it only ever grows: every card ever expanded leaves an id
+     * behind, including for builds long since deleted, and the preference
+     * that survives a refresh slowly becomes a list of everything the browser
+     * has ever seen.
+     */
+    const setExpanded = (ids: string[]) => {
+        const known = new Set(buildHistory.map(b => b.id));
+        const pruned = Array.from(new Set(ids)).filter(id => known.has(id));
+        setExpandedBuilds(pruned);
+        writeJSON('ezpipeline.expandedBuilds', pruned);
+    };
+
+    const toggleBuildExpanded = (id: string) => {
+        setExpanded(expandedSet.has(id)
+            ? expandedBuilds.filter(x => x !== id)
+            : [...expandedBuilds, id]);
+    };
+
+    // Scoped to what is ON SCREEN, not to everything fetched. "Expand all"
+    // pressed while looking at Prod should not also expand ninety Dev runs
+    // that are one click of the side nav away.
+    const allVisibleExpanded =
+        visibleBuildHistory.length > 0 && visibleBuildHistory.every(b => expandedSet.has(b.id));
+    const toggleAllVisible = () => {
+        const visibleIds = visibleBuildHistory.map(b => b.id);
+        setExpanded(allVisibleExpanded
+            ? expandedBuilds.filter(id => !visibleIds.includes(id))
+            : [...expandedBuilds, ...visibleIds]);
+    };
+
     const moreToLoad = filteredBuildHistory.length > visibleBuilds;
 
     /**
@@ -1438,6 +1634,27 @@ const DashboardPage: React.FC = () => {
                                 )}
                             </div>
                             <div className="flex items-center gap-2">
+                                {/* Only when there is something to act on. A
+                                    control that does nothing is worse than an
+                                    absent one: it invites a press and then
+                                    teaches that the button is unreliable. */}
+                                {visibleBuildHistory.length > 0 && (
+                                    <button
+                                        onClick={toggleAllVisible}
+                                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                        title={
+                                            allVisibleExpanded
+                                                ? `Collapse all ${visibleBuildHistory.length} runs shown here`
+                                                : `Expand all ${visibleBuildHistory.length} runs shown here`
+                                        }
+                                        aria-expanded={allVisibleExpanded}
+                                    >
+                                        {allVisibleExpanded
+                                            ? <ChevronsDownUp className="w-3.5 h-3.5" />
+                                            : <ChevronsUpDown className="w-3.5 h-3.5" />}
+                                        {allVisibleExpanded ? 'Collapse all' : 'Expand all'}
+                                    </button>
+                                )}
                                 {selectedGroup && (
                                     <button
                                         onClick={() => setConfiguringGroup(selectedGroup)}
@@ -1463,8 +1680,24 @@ const DashboardPage: React.FC = () => {
                             <>
                             {visibleBuildHistory.map((build) => (
                                 <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
-                                    <div className="p-4 bg-slate-900/50 border-b border-slate-700 flex items-center justify-between gap-4">
+                                    <div className={`p-4 bg-slate-900/50 flex items-center justify-between gap-4 ${expandedSet.has(build.id) ? 'border-b border-slate-700' : ''}`}>
                                         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                                            {/* THE DISCLOSURE, first in the row.
+                                                It is the control that decides what
+                                                the rest of the card is, so it reads
+                                                before the thing it governs. */}
+                                            <button
+                                                type="button"
+                                                onClick={() => toggleBuildExpanded(build.id)}
+                                                className="shrink-0 -ml-1 rounded p-0.5 text-slate-500 hover:bg-slate-700 hover:text-white transition-colors"
+                                                aria-expanded={expandedSet.has(build.id)}
+                                                aria-label={`${expandedSet.has(build.id) ? 'Collapse' : 'Expand'} the steps of build ${build.buildNumber}`}
+                                                title={expandedSet.has(build.id) ? 'Hide the steps' : 'Show the steps'}
+                                            >
+                                                {expandedSet.has(build.id)
+                                                    ? <ChevronDown className="w-4 h-4" />
+                                                    : <ChevronRight className="w-4 h-4" />}
+                                            </button>
                                             <span className="text-slate-400 font-mono text-sm">#{build.buildNumber}</span>
                                             <span className="text-white font-semibold">{build.pipelineName}</span>
                                             {/* WHICH ENVIRONMENT this run touched. The history is a
@@ -1628,6 +1861,18 @@ const DashboardPage: React.FC = () => {
                                             )}
                                         </div>
                                     </div>
+                                    {/* THE CONDENSED VIEW. One bar in place of the
+                                        whole step grid, carrying the three things a
+                                        collapsed run still has to say: how far it
+                                        got, whether it failed, and whether it is
+                                        waiting on a person. */}
+                                    {!expandedSet.has(build.id) && (
+                                        <div className="px-4 pb-3.5 pt-0.5">
+                                            <RunProgressBar build={build} now={now} />
+                                        </div>
+                                    )}
+
+                                    {expandedSet.has(build.id) && (
                                     <div className="p-4 bg-slate-900/30">
                                         <div className="flex flex-wrap gap-2">
                                             {build.steps.map((step, idx) => (
@@ -1935,6 +2180,7 @@ const DashboardPage: React.FC = () => {
                                             busy={rollingBack === build.id}
                                         />
                                     </div>
+                                    )}
                                 </div>
                             ))}
 
