@@ -89,20 +89,18 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             just made", which took most of an evening to establish once by
             other means.
 
-            ── WHY THE ROW IS A GRID AND NOT TWO STACKED FLEX BOXES ─────────
+            ── WHY IT HANGS OFF THE LEFT EDGE AND NOT THE RIGHT ─────────────
 
-            Both lines have to end on the same pixel, and `items-end` on a
-            column does not give that: it right-aligns each child against the
-            column, whose width is set by the WIDER of them. The version line
-            is much the narrower, so the row decided the width and the version
-            sat against the row's edge - which is the icon's box, not the
-            icon's glyph, and the two read as misaligned by exactly the
-            button's inner padding.
+            It was right-aligned first, under the sign-out icon, and that can
+            never read as aligned: the icon is a glyph inside a button with
+            padding around it, so the version lines up with the BUTTON's edge
+            while the eye compares it to the GLYPH. It looks off by exactly
+            that padding wherever it is nudged to.
 
-            justify-end on both grid rows aligns them to the same right edge,
-            and the negative margin on the version pulls it back under the
-            glyph rather than under the button's padding. */}
-        <div className="grid justify-items-end gap-0.5">
+            "User:" has no padding to be wrong about. A shared left edge with
+            it is an alignment that can be seen to be true, which is the only
+            kind worth having for something this small. */}
+        <div className="grid justify-items-start gap-0.5">
           <div className="flex items-center gap-4">
             <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
             <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
@@ -110,7 +108,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             </button>
           </div>
           <span
-            className="text-[10px] leading-none font-mono text-[var(--color-text-muted)] opacity-60 -mt-0.5 mr-[2px]"
+            className="text-[10px] leading-none font-mono text-[var(--color-text-muted)] opacity-60 -mt-0.5"
             title={`${appVersion.version} on ${appVersion.branch}, commit ${appVersion.commit}. The number rises every time the code moves, so if it has not changed since a push, this page is not running it.`}
           >
             {appVersion.version}
