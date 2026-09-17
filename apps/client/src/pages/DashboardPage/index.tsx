@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration, formatDurationCompact } from '../../helpers/formatDuration';
@@ -375,13 +375,56 @@ const DashboardPage: React.FC = () => {
         }
     };
 
+    /**
+     * Which group the page is showing, readable from callbacks made earlier.
+     *
+     * ── THE CLOSURE THAT KEPT PUTTING THE WRONG GROUP BACK ──────────────────
+     *
+     * fetchBuildHistory is called from five places, and one of them is the SSE
+     * handler inside the effect keyed on [token]. That effect is created ONCE,
+     * at mount, so the function it calls closed over whatever selectedGroup was
+     * at mount and never saw another value.
+     *
+     * A running build emits events constantly, and every one of them refetched
+     * THE GROUP FROM PAGE LOAD and wrote it over whatever the user had just
+     * selected. The server log is unambiguous about it:
+     *
+     *   22:37:10  ?group=Notch.fm/Prod      the click
+     *   22:37:12  ?group=Notch.fm/Dev       two seconds later, unprompted
+     *
+     * So the panel was right for a moment and then silently wrong, which is
+     * exactly the "sometimes" in the report - and why clicking a pipeline
+     * appeared to fix it: that fires a fresh correct fetch which wins until the
+     * next event arrives.
+     *
+     * A ref rather than a dependency on the SSE effect, because adding one
+     * would tear down and rebuild a live EventSource every time somebody clicks
+     * a folder, dropping the stream that carries running-build output.
+     */
+    const selectedGroupRef = useRef(selectedGroup);
+    useEffect(() => {
+        selectedGroupRef.current = selectedGroup;
+    }, [selectedGroup]);
+
     const fetchBuildHistory = async () => {
+        // The CURRENT group, never the one this function was created beside.
+        const group = selectedGroupRef.current;
         try {
-            const query = selectedGroup && selectedGroup !== 'General' ? `?group=${encodeURIComponent(selectedGroup)}` : '';
+            const query = group && group !== 'General' ? `?group=${encodeURIComponent(group)}` : '';
             const response = await fetch(`${API_URL}/api/builds/history${query}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await response.json();
+
+            // ── AND DISCARD AN ANSWER ABOUT A GROUP NOBODY IS LOOKING AT ────
+            //
+            // Two requests can be in flight at once - a click and an SSE event
+            // land together - and without this the LAST to resolve wins rather
+            // than the most recent to be asked. That is the same wrong panel by
+            // a different route, and it is the one that would survive the fix
+            // above.
+            if (selectedGroupRef.current !== group) return;
+
             // Sort by startTime DESC (newest first)
             const sorted = (data.history || [])
                 .sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
