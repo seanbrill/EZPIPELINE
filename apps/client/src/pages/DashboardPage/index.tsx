@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PipelinePicker } from "../../components/Shared/PipelinePicker";
 import BuildTerminal from '../../components/BuildTerminal';
 import { formatDuration, formatDurationCompact } from '../../helpers/formatDuration';
+import { formatBuildTime } from "../../helpers/formatBuildTime";
 import { readJSON, writeJSON } from '../../helpers/persistedState';
 import { stepProgress } from '../../helpers/stepProgress';
 import PipelineSettingsModal from '../../components/PipelineSettingsModal';
@@ -1756,7 +1757,7 @@ const DashboardPage: React.FC = () => {
                                                 made that side impossible to align: a two-line block
                                                 next to a row of icons has no shared baseline. */}
                                             <span className="theme-text-muted text-sm font-medium tabular-nums">
-                                                {new Date(build.startTime).toLocaleTimeString()}
+                                                {formatBuildTime(build.startTime)}
                                             </span>
                                             {build.duration !== undefined && build.duration > 0 && (
                                                 <span className={`${RUN_CTRL_H} flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 rounded-full border border-emerald-400/20`}>
