@@ -1346,8 +1346,12 @@ const DashboardPage: React.FC = () => {
     // the same problem - a list that quietly holds one pipeline's builds looks
     // identical to a group that only ever ran one. The heading below names what
     // is being shown and offers a way back.
+    // `appName`, not `name`. Pipeline has no `name`, so this was always
+    // undefined and the heading it feeds - the one that exists to say WHICH
+    // pipeline is being shown - rendered nothing at all. The type error was
+    // sitting in the build the whole time saying so.
     const selectedPipelineName = selectedPipelineForRun
-        ? pipelines.find(p => p.id === selectedPipelineForRun)?.name
+        ? pipelines.find(p => p.id === selectedPipelineForRun)?.appName
         : undefined;
     const filteredBuildHistory = buildHistory.filter(
         b =>

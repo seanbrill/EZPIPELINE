@@ -232,3 +232,7 @@ apps/server/server_log.txt
 # The folder itself stays, because PUBLIC_DIR resolves to it at boot.
 apps/server/public/*
 !apps/server/public/.gitkeep
+
+# Debris from hand-testing the login route. Only ever an error body, but
+# there is no reason for a response dump to be in the repository.
+login_response*.json

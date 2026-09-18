@@ -110,7 +110,10 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
             title: `Delete ${c.name}?`,
             message: 'Any pipeline in this group that used it will fall back to whatever the host has, which is how the last problem started.',
             confirmText: 'Delete',
-            danger: true,
+            // `isDangerous`, which is what ConfirmOptions actually declares.
+            // As `danger` it was silently ignored, so the one confirmation in
+            // this app that deletes a credential did not look like it.
+            isDangerous: true,
         }))) return;
         try {
             const res = await fetch(`${API_URL}/api/git-credentials/${g}/${c.id}`, {
