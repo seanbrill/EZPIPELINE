@@ -816,6 +816,44 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
                                                             </span>
                                                         </label>
                                                     </div>
+                                                    {/* HOW FAR THE NEXT RUN MAY GET, and only worth asking once
+                                                        the condition above is on.
+
+                                                        All-or-nothing was the wrong shape. Pushing several
+                                                        commits in a row starts several builds, and the promote
+                                                        on the first was refused before anybody could reach it -
+                                                        by a run that had so far only checked out a branch. What
+                                                        makes the older card wrong is the new run getting far
+                                                        enough to change what the button acts on, so that is what
+                                                        this names. */}
+                                                    {step.requireLatestBuild === true && (
+                                                        <div className="col-span-12 pb-1 pl-6">
+                                                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                                                Until the next run reaches
+                                                            </label>
+                                                            <select
+                                                                value={step.requireLatestBuildUntilStep ?? ''}
+                                                                onChange={e => handleStepChange(idx, 'requireLatestBuildUntilStep', e.target.value || undefined)}
+                                                                className="w-full bg-black/20 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+                                                            >
+                                                                {/* The empty option IS the old behaviour, named.
+                                                                    Leaving it unlabelled would make the setting
+                                                                    look unset rather than deliberate. */}
+                                                                <option value="">Any newer run at all</option>
+                                                                {(Array.isArray(parsed?.steps) ? parsed.steps : [])
+                                                                    .map((s: any) => String(s?.name ?? ''))
+                                                                    .filter((n: string) => n && n !== step.name)
+                                                                    .map((n: string) => (
+                                                                        <option key={n} value={n}>{n}</option>
+                                                                    ))}
+                                                            </select>
+                                                            <span className="block text-[10px] text-slate-500 mt-1">
+                                                                The button keeps working on older runs until a newer run
+                                                                STARTS this step, then stops and says which step took it
+                                                                away. Reached counts, not finished.
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                                 <div>

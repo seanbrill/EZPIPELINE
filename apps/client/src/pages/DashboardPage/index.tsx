@@ -113,6 +113,19 @@ export interface BuildHistoryEntry {
          * describing last Tuesday.
          */
         requireLatestBuild?: boolean;
+        /**
+         * For `type: action`: the step in a NEWER run of this pipeline at
+         * which this button stops working. Absent means the old behaviour -
+         * any newer run at all refuses it.
+         *
+         * The point is that a new run EXISTING is not what makes an older
+         * card's promote wrong; the new run having got far enough to change
+         * what the promote would merge is. Several commits pushed in a row
+         * each start a build, and the button was gone before anybody could
+         * reach it, refused by a run that had so far only checked out a
+         * branch.
+         */
+        requireLatestBuildUntilStep?: string;
         /** Median of recent successful runs, ms. Absent until there is history. */
         estimatedDuration?: number;
         /** Epoch ms this run started the step. */
@@ -455,6 +468,30 @@ const DashboardPage: React.FC = () => {
             if (b.id && !newest.has(b.pipelineId)) newest.set(b.pipelineId, b.id);
         }
         return newest;
+    }, [buildHistory]);
+    /**
+     * For each run, the runs of the SAME pipeline that came after it.
+     *
+     * Same sort as above and for the same reason: buildHistory arrives
+     * newest-first, so "newer than this one" is "already seen while walking
+     * the list". No timestamps compared here either.
+     *
+     * Needed because "is this the latest run" turned out to be the wrong
+     * question. `requireLatestBuildUntilStep` asks a better one - has anything
+     * newer got far enough to change what this button would act on - and that
+     * needs the newer runs themselves, not just the newest one's id.
+     */
+    const newerRunsPerBuild = useMemo(() => {
+        const out = new Map<string, typeof buildHistory>();
+        const seen = new Map<string, typeof buildHistory>();
+        for (const b of buildHistory) {
+            if (!b.id) continue;
+            const older = seen.get(b.pipelineId) ?? [];
+            out.set(b.id, older.slice());
+            older.push(b);
+            seen.set(b.pipelineId, older);
+        }
+        return out;
     }, [buildHistory]);
     const [logs, setLogs] = useState<string[]>([]);
     // Restored from the last visit, then VALIDATED once the real lists arrive -
@@ -2066,9 +2103,30 @@ const DashboardPage: React.FC = () => {
                                                         // An action on the current state of something - promote
                                                         // merges whatever develop points at NOW - does not do
                                                         // what an old card implies when pressed from one.
+                                                        //
+                                                        // UNTIL A NAMED STEP, when one is configured. A new run
+                                                        // existing is not what makes this card's button wrong -
+                                                        // the new run having got far enough to change what the
+                                                        // button acts on is. Pushing three commits in a row
+                                                        // started three builds and took the promote away before
+                                                        // anybody could press it, refused by a run that had so
+                                                        // far only checked out a branch.
+                                                        //
+                                                        // ANY newer run, not just the newest, and REACHED rather
+                                                        // than finished: if something after this card is already
+                                                        // building images, this card no longer describes what
+                                                        // pressing the button would do, whatever the run after
+                                                        // THAT is up to.
+                                                        const gate = step.requireLatestBuildUntilStep?.trim();
+                                                        const newerRuns = build.id ? newerRunsPerBuild.get(build.id) ?? [] : [];
+                                                        const overtakenBy = gate
+                                                            ? newerRuns.find(b => (b.steps ?? []).some(
+                                                                s => s.name === gate && s.status !== 'pending'
+                                                            ))
+                                                            : newerRuns[0];
                                                         const superseded = step.requireLatestBuild === true
                                                             && !!build.id
-                                                            && latestBuildPerPipeline.get(build.pipelineId) !== build.id;
+                                                            && !!overtakenBy;
                                                         const blocked = !!waitingOn || superseded;
                                                         // READY MEANS PRESSABLE RIGHT NOW, which is narrower
                                                         // than "not blocked": a button already running, or one
@@ -2111,7 +2169,9 @@ const DashboardPage: React.FC = () => {
                                                                     title={waitingOn
                                                                         ? `Waiting on "${waitingOn.name}" (${waitingOn.status}) to finish first`
                                                                         : superseded
-                                                                            ? `There is a newer run of this pipeline. This action works on the current state, so running it from here would not promote THIS build - open the latest run instead.`
+                                                                            ? gate
+                                                                                ? `A newer run of this pipeline has reached "${gate}", so this card no longer describes what pressing this would do. Open the latest run instead.`
+                                                                                : `There is a newer run of this pipeline. This action works on the current state, so running it from here would not promote THIS build - open the latest run instead.`
                                                                             : `${summary}${step.description ? `\n\n${step.description}` : ''}`}
                                                                     // AN ICON, NOT THE NAME. The card's heading is
                                                                     // already the step name, so the button repeated it
@@ -2126,7 +2186,9 @@ const DashboardPage: React.FC = () => {
                                                                     aria-label={waitingOn
                                                                         ? `${step.name} - waiting on "${waitingOn.name}"`
                                                                         : superseded
-                                                                            ? `${step.name} - unavailable, a newer run of this pipeline exists`
+                                                                            ? gate
+                                                                                ? `${step.name} - unavailable, a newer run has reached "${gate}"`
+                                                                                : `${step.name} - unavailable, a newer run of this pipeline exists`
                                                                             : step.name}
                                                                     // AMBER WHILE IT WAITS. Green-but-faded read as
                                                                     // "this is the button, it is just dim"; amber reads

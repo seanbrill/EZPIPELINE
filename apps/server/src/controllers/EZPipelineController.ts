@@ -64,6 +64,27 @@ export interface Step {
    * button you want on an old card.
    */
   requireLatestBuild?: boolean;
+  /**
+   * For `type: action`: how far the NEXT run may get before this button stops
+   * working. A step name in this same pipeline, or absent for "not at all".
+   *
+   * `requireLatestBuild` on its own is all-or-nothing: the moment a new run
+   * appears the button is refused, which is correct for a promote pressed off
+   * a card from last Tuesday and wrong for the case that actually happens.
+   * Sean pushes several commits in a row, each one starting a dev build, and
+   * the promote he meant to press on the first is disabled before he reaches
+   * it - by a run that has done nothing yet but check out a branch.
+   *
+   * What makes the older card WRONG is not the new run existing, it is the new
+   * run having got far enough to change the thing the action works on. So this
+   * names that step. Until the newest run reaches it, the older card's button
+   * is still honest; from that step onwards it is not.
+   *
+   * REACHED, not finished: any status but `pending` counts. A step that is
+   * halfway through building an image has already started replacing what the
+   * button would have promoted.
+   */
+  requireLatestBuildUntilStep?: string;
   cwd?: string;
   env?: Record<string, string>;
   continueOnError?: boolean;
@@ -103,6 +124,27 @@ export interface BuildStepHistory {
    * which run is newest, so it needs nothing else to work this out.
    */
   requireLatestBuild?: boolean;
+  /**
+   * For `type: action`: how far the NEXT run may get before this button stops
+   * working. A step name in this same pipeline, or absent for "not at all".
+   *
+   * `requireLatestBuild` on its own is all-or-nothing: the moment a new run
+   * appears the button is refused, which is correct for a promote pressed off
+   * a card from last Tuesday and wrong for the case that actually happens.
+   * Sean pushes several commits in a row, each one starting a dev build, and
+   * the promote he meant to press on the first is disabled before he reaches
+   * it - by a run that has done nothing yet but check out a branch.
+   *
+   * What makes the older card WRONG is not the new run existing, it is the new
+   * run having got far enough to change the thing the action works on. So this
+   * names that step. Until the newest run reaches it, the older card's button
+   * is still honest; from that step onwards it is not.
+   *
+   * REACHED, not finished: any status but `pending` counts. A step that is
+   * halfway through building an image has already started replacing what the
+   * button would have promoted.
+   */
+  requireLatestBuildUntilStep?: string;
   /**
    * 'aborted' is the step the build was ON when somebody stopped it.
    *
@@ -341,6 +383,7 @@ export default class EZPipelineController extends EventEmitter {
             confirm: s.confirm,
             requirePriorSteps: s.requirePriorSteps,
             requireLatestBuild: s.requireLatestBuild,
+            requireLatestBuildUntilStep: s.requireLatestBuildUntilStep,
             status: stepStatus,
             duration: stepDuration,
             // What this step usually takes, and when this run started it. The
