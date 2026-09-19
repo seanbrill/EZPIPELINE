@@ -160,9 +160,41 @@ export class BuildService {
         db.prepare(sql).run(...values);
     }
 
+    /**
+     * Append a line to a build's log. NEVER THROWS.
+     *
+     * ── THE CRASH THIS EXISTS FOR ──────────────────────────────────────────
+     *
+     * Sean cleared the build history for a group while a deploy was still
+     * running. The DELETE removed the `builds` row; the runner carried on and
+     * called this a moment later; `build_logs.build_id` is a foreign key to a
+     * row that no longer existed, so the INSERT threw SQLITE_CONSTRAINT_-
+     * FOREIGNKEY from inside a socket data handler - where nothing was
+     * catching it. An unhandled throw on that path takes the whole process
+     * down, and it did: the container stayed up because the server runs under
+     * a watcher, so it looked alive while answering nothing.
+     *
+     * ── WHY SWALLOWING IS RIGHT HERE, SPECIFICALLY ────────────────────────
+     *
+     * A log line is the one thing in this service that must never be more
+     * important than the thing it is describing. Every other method writes
+     * state somebody acts on; this one writes commentary. A build whose row
+     * has been deleted has nowhere to log and nothing that would read it - so
+     * the correct response to "that build is gone" is to stop writing, not to
+     * take down the server that is running four other pipelines.
+     *
+     * The failure is reported to stderr rather than silently dropped, because
+     * a log method that hides its own failure is how a whole run turns up
+     * empty and nobody can say why.
+     */
     public log(buildId: string, message: string) {
-        const db = this.db.getDb();
-        db.prepare("INSERT INTO build_logs (build_id, message) VALUES (?, ?)").run(buildId, message);
+        try {
+            const db = this.db.getDb();
+            db.prepare("INSERT INTO build_logs (build_id, message) VALUES (?, ?)").run(buildId, message);
+        } catch (e) {
+            const why = e instanceof Error ? e.message : String(e);
+            console.warn(`[BuildService] dropped a log line for build ${buildId}: ${why}`);
+        }
     }
 
     public getRecentBuilds(limit = 50): any[] {
@@ -230,38 +262,76 @@ export class BuildService {
         db.prepare("DELETE FROM builds WHERE id = ?").run(id);
     }
 
+    /**
+     * Same rule as clearBuildsByTargets: history is what has finished.
+     *
+     * Both branches used to take running builds with them - the per-pipeline
+     * one by deleting on `target`, and the clear-ALL one by deleting the whole
+     * table. See clearBuildsByTargets for the crash that came of it.
+     */
     public clearBuildHistory(target?: string) {
         const db = this.db.getDb();
-        if (target) {
-            // Get all build IDs for this target
-            const builds = db.prepare("SELECT id FROM builds WHERE target = ?").all(target) as { id: string }[];
-            const ids = builds.map(b => b.id);
+        const finished = target
+            ? db.prepare(
+                  "SELECT id FROM builds WHERE target = ? AND status NOT IN ('running', 'paused')"
+              ).all(target)
+            : db.prepare(
+                  "SELECT id FROM builds WHERE status NOT IN ('running', 'paused')"
+              ).all();
+        const ids = (finished as { id: string }[]).map(b => b.id);
 
-            if (ids.length === 0) return;
+        if (ids.length === 0) return;
 
-            const placeholders = ids.map(() => '?').join(',');
-            db.prepare(`DELETE FROM build_logs WHERE build_id IN (${placeholders})`).run(...ids);
-            db.prepare("DELETE FROM builds WHERE target = ?").run(target);
-        } else {
-            // Clear ALL
-            db.prepare("DELETE FROM build_logs").run();
-            db.prepare("DELETE FROM builds").run();
-        }
+        const placeholders = ids.map(() => '?').join(',');
+        db.prepare(`DELETE FROM build_logs WHERE build_id IN (${placeholders})`).run(...ids);
+        // BY ID in both branches. Deleting by target, or truncating the table,
+        // is what took the in-flight rows the SELECT above just spared.
+        db.prepare(`DELETE FROM builds WHERE id IN (${placeholders})`).run(...ids);
     }
 
+    /**
+     * Clear a group's HISTORY, which does not include what is still happening.
+     *
+     * ── THE CRASH THIS EXISTS FOR ──────────────────────────────────────────
+     *
+     * This deleted every build for the group, running ones included. Sean
+     * cleared the Notch.fm history while a deploy-prod was mid-run: the row
+     * went, the runner carried on and called BuildService.log a second later,
+     * and the foreign key from build_logs to a build that no longer existed
+     * threw from inside a socket handler with nothing catching it. The server
+     * process died. The container stayed up - it runs under a watcher - so it
+     * looked healthy while answering nothing on 5001.
+     *
+     * `log()` no longer throws, which stops that from being fatal. This is the
+     * other half, and it is the one that makes the button mean what it says: a
+     * build that is RUNNING is not history. Deleting its row while its runner
+     * is still writing to it loses the log of the thing you are currently
+     * watching, and leaves a live process with nowhere to report.
+     *
+     * Paused counts as in-flight for the same reason: it is waiting for
+     * somebody, and it resumes into a row that has to still be there.
+     */
     public clearBuildsByTargets(targets: string[]) {
         if (targets.length === 0) return;
         const db = this.db.getDb();
         const targetPlaceholders = targets.map(() => '?').join(',');
 
-        // Get IDs
-        const builds = db.prepare(`SELECT id FROM builds WHERE target IN (${targetPlaceholders})`).all(...targets) as { id: string }[];
+        // Finished builds only. The status list is the in-flight one, negated,
+        // so a status added later is treated as history rather than silently
+        // becoming undeletable.
+        const builds = db.prepare(
+            `SELECT id FROM builds
+              WHERE target IN (${targetPlaceholders})
+                AND status NOT IN ('running', 'paused')`
+        ).all(...targets) as { id: string }[];
         const ids = builds.map(b => b.id);
 
         if (ids.length === 0) return;
 
         const idPlaceholders = ids.map(() => '?').join(',');
         db.prepare(`DELETE FROM build_logs WHERE build_id IN (${idPlaceholders})`).run(...ids);
-        db.prepare(`DELETE FROM builds WHERE target IN (${targetPlaceholders})`).run(...targets);
+        // BY ID, not by target: deleting by target again would take the
+        // running rows the SELECT above deliberately spared.
+        db.prepare(`DELETE FROM builds WHERE id IN (${idPlaceholders})`).run(...ids);
     }
 }
