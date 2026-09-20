@@ -227,6 +227,47 @@ function awaitingPerson(build: BuildHistoryEntry): string | null {
  * progress is claimed to be. Its honesty notes apply here unchanged: no
  * history means an indeterminate segment rather than an invented number.
  */
+/**
+ * How long a run has been WORKING for.
+ *
+ * ── THE BUG THIS FIXES ─────────────────────────────────────────────────────
+ *
+ * `build.duration` arrives from the server as the sum of FINISHED steps, and a
+ * step is only given a duration when it ends. So while a run is in flight the
+ * one step actually doing the work contributes nothing at all, and the pill
+ * reports the run as having taken however long everything BEFORE the current
+ * step took.
+ *
+ * Reported 2026-09-20 against a dev build sitting on "Do the migrations build
+ * the schema the code expects" at 4m1s, with the pill reading 34s - which is
+ * exactly 0.9 + 3.7 + 0.1 + 0.4 + 14 + 3.9 + 2.1 + 8.6, the eight steps that
+ * had finished.
+ *
+ * ── WHY NOT JUST now - startTime ───────────────────────────────────────────
+ *
+ * Because the server's definition is deliberate and worth keeping: it walks
+ * the pipeline summing step durations and SKIPS approval steps. A prod run
+ * parks on "Approve this rollout" until a person gets to it, and a pill that
+ * said 3h because somebody approved after lunch would be reporting how
+ * available Sean was, not how long the build took. Wall clock would throw that
+ * away. Adding the running step's own elapsed time keeps the meaning and fixes
+ * the arithmetic.
+ *
+ * Ticks, because `now` does.
+ */
+function runDuration(build: BuildHistoryEntry, now: number): number {
+    const base = build.duration ?? 0;
+    // Only a live run has a step still accruing. A finished one is already
+    // whole, and an aborted one must stop counting - see the note in
+    // RunProgressBar about the clock that ran for forty-five minutes.
+    if (build.status !== 'running' && build.status !== 'paused') return base;
+    const running = (build.steps ?? []).find(
+        (s: any) => s.status === 'running' && typeof s.startedAt === 'number'
+    );
+    if (!running) return base;
+    return base + Math.max(0, now - (running as any).startedAt);
+}
+
 function RunProgressBar({ build, now }: { build: BuildHistoryEntry; now: number }) {
     const steps = build.steps ?? [];
     const waitingOn = awaitingPerson(build);
@@ -1800,10 +1841,10 @@ const DashboardPage: React.FC = () => {
                                             <span className="theme-text-muted text-sm font-medium tabular-nums">
                                                 {formatBuildTime(build.startTime)}
                                             </span>
-                                            {build.duration !== undefined && build.duration > 0 && (
+                                            {runDuration(build, now) > 0 && (
                                                 <span className={`${RUN_CTRL_H} flex items-center gap-1 text-xs text-emerald-400/80 bg-emerald-400/10 px-2 rounded-full border border-emerald-400/20`}>
                                                     <Clock className="w-3 h-3" />
-                                                    {formatDuration(build.duration)}
+                                                    {formatDuration(runDuration(build, now))}
                                                 </span>
                                             )}
                                         </div>
