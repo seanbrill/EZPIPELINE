@@ -135,7 +135,7 @@ const UsersTab: React.FC = () => {
                 </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-700/50 shadow-inner">
+            <div className="overflow-x-auto rounded-xl border border-slate-700/50 shadow-inner">
                 <table className="w-full text-left text-sm text-slate-300">
                     <thead className="bg-[#1a1f2e] text-slate-400 uppercase font-bold text-xs tracking-wider">
                         <tr>

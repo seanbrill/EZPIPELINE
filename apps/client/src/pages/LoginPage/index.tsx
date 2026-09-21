@@ -314,7 +314,7 @@ const LoginPage: React.FC = () => {
                             <button
                                 type="button"
                                 onClick={() => setShowRecovery((v) => !v)}
-                                className="text-xs text-[var(--color-primary)] hover:text-emerald-400 transition-colors"
+                                className="text-xs text-[var(--color-primary)] hover:text-emerald-400 transition-colors -my-3.5 py-3.5 px-2 -mx-2"
                                 aria-expanded={showRecovery}
                             >
                                 Forgot Password?
@@ -337,11 +337,11 @@ const LoginPage: React.FC = () => {
                             </p>
                         )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-h-11 items-center gap-2">
                         <input
                             type="checkbox"
                             id="remember"
-                            className="rounded bg-slate-900 border-slate-700 text-[var(--color-primary)] focus:ring-0 focus:ring-offset-0"
+                            className="size-4 rounded bg-slate-900 border-slate-700 text-[var(--color-primary)] focus:ring-0 focus:ring-offset-0"
                             checked={rememberMe}
                             onChange={(e) => setRememberMe(e.target.checked)}
                         />

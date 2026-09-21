@@ -97,7 +97,7 @@ const ChatWidget: React.FC = () => {
 
     return (
         <div className={`fixed z - 50 transition - all duration - 300 ease -in -out bg - [#1e1e1e] border border - slate - 700 shadow - 2xl overflow - hidden flex flex - col
-            ${isMinimized ? 'bottom-6 right-6 w-72 h-14 rounded-full' : 'bottom-6 right-6 w-[400px] h-[600px] rounded-xl'}
+            ${isMinimized ? 'bottom-6 right-6 w-72 h-14 rounded-full' : 'bottom-4 right-3 left-3 sm:left-auto sm:right-6 w-auto sm:w-[400px] h-[min(600px,calc(100dvh-6rem))] rounded-xl'}
 `}>
             {/* Header */}
             <div className={`flex items - center justify - between p - 3 bg - slate - 900 border - b border - slate - 700 ${isMinimized ? 'h-full border-none cursor-pointer' : ''} `}

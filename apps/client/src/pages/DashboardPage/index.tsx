@@ -2441,7 +2441,7 @@ const DashboardPage: React.FC = () => {
             {
                 renamingGroup && (
                     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-                        <div className="bg-[var(--color-surface)] rounded-xl p-6 w-96 border border-slate-700 shadow-2xl">
+                        <div className="bg-[var(--color-surface)] rounded-xl p-6 w-full max-w-sm border border-slate-700 shadow-2xl">
                             <h3 className="text-lg font-semibold text-white mb-4">Rename Group</h3>
                             <input
                                 type="text"

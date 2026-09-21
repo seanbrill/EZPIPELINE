@@ -106,7 +106,7 @@ const AgentTokenModal: React.FC<AgentTokenModalProps> = ({ onClose }) => {
 
     return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-[#1e1e1e] rounded-xl border border-slate-700 shadow-2xl w-[600px] max-h-[85vh] flex flex-col">
+            <div className="bg-[#1e1e1e] rounded-xl border border-slate-700 shadow-2xl w-full max-w-[600px] max-h-[85vh] flex flex-col">
                 <div className="flex justify-between items-center p-4 border-b border-slate-700">
                     <h2 className="text-xl font-bold text-white flex items-center gap-2">
                         <Key className="w-5 h-5 text-purple-400" />

@@ -520,7 +520,7 @@ const AIAssistant: React.FC = () => {
     return (
         <div
             style={style}
-            className="fixed bottom-20 right-6 w-[450px] h-[600px] bg-[#111] rounded-2xl shadow-2xl shadow-black/80 flex flex-col border border-[#333] overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-4 duration-300"
+            className="fixed bottom-20 right-3 left-3 sm:left-auto sm:right-6 w-auto sm:w-[450px] h-[min(600px,calc(100dvh-7rem))] bg-[#111] rounded-2xl shadow-2xl shadow-black/80 flex flex-col border border-[#333] overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-4 duration-300"
             ref={isDragging ? dragRef : undefined}
             onMouseDown={isDragging ? undefined : (e) => e.preventDefault()}
         >

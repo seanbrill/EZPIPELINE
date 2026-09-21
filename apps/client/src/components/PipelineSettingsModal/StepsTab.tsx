@@ -306,8 +306,8 @@ const StepsTab: React.FC<StepsTabProps> = ({ content, onChange, resources, globa
 
     // --- Variable Injection Modal Component ---
     const VariableModal = () => (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[100]" onClick={() => setVariableModalOpen(false)}>
-            <div className="bg-[#1e1e1e] border border-slate-700 rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4" onClick={() => setVariableModalOpen(false)}>
+            <div className="bg-[#1e1e1e] border border-slate-700 rounded-xl shadow-2xl w-full max-w-[600px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between p-4 border-b border-slate-800">
                     <h3 className="text-lg font-bold text-white flex items-center gap-2">
                         <Terminal className="w-5 h-5 text-emerald-500" />
