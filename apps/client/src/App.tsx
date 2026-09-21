@@ -71,16 +71,26 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           rendered near-invisibly: "PIPELINE" measured 1.0:1 against its own
           background - literally the same colour - and "User:" 1.5:1. Tokens
           flip with the theme; text-white does not. */}
-      <nav className="flex-none border-b border-[var(--color-text-muted)]/20 bg-[var(--color-surface)] p-4 flex justify-between items-center z-10">
-        <div className="flex items-center gap-6">
+      {/* ── IT WRAPS, AND THE LINKS KEEP THEIR TEXT ──────────────────────
+          One non-wrapping row of logo + three links + user + sign-out is
+          399px of left group alone on a 393px screen, and the page does not
+          scroll sideways - so "Settings" was not off-screen, it was
+          unreachable. Reported with a screenshot: "Not usable for me on the
+          phone like this."
+
+          Wrapping rather than hiding the labels: an icon-only nav needs
+          learning, and this one has three destinations. It costs a second row
+          on a phone and nothing at all above `sm`. */}
+      <nav className="flex-none border-b border-[var(--color-text-muted)]/20 bg-[var(--color-surface)] p-3 sm:p-4 flex flex-wrap justify-between items-center gap-y-2 gap-x-3 z-10">
+        <div className="flex items-center gap-3 sm:gap-6 min-w-0">
           <h1 className="text-xl font-bold">
             <span className="text-[var(--color-primary)]">EZ</span>
             <span className="text-[var(--color-text)]">PIPELINE</span>
           </h1>
-          <div className="flex gap-4 text-sm font-medium text-[var(--color-text-muted)]">
-            <Link to="/" className="hover:text-[var(--color-text)] flex items-center gap-2"><LayoutDashboard size={16} /> Dashboard</Link>
-            <Link to="/docs" className="hover:text-[var(--color-text)] flex items-center gap-2"><Book size={16} /> Docs</Link>
-            <Link to="/settings" className="hover:text-[var(--color-text)] flex items-center gap-2"><Settings size={16} /> Settings</Link>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium text-[var(--color-text-muted)]">
+            <Link to="/" className="hover:text-[var(--color-text)] flex min-h-11 items-center gap-2"><LayoutDashboard size={16} /> Dashboard</Link>
+            <Link to="/docs" className="hover:text-[var(--color-text)] flex min-h-11 items-center gap-2"><Book size={16} /> Docs</Link>
+            <Link to="/settings" className="hover:text-[var(--color-text)] flex min-h-11 items-center gap-2"><Settings size={16} /> Settings</Link>
           </div>
         </div>
         {/* ── THE BUILD STAMP ──────────────────────────────────────────────
@@ -103,7 +113,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         <div className="grid justify-items-start gap-0.5">
           <div className="flex items-center gap-4">
             <span className="text-sm text-[var(--color-text-muted)]">User: {user}</span>
-            <button onClick={() => setShowLogoutConfirm(true)} className="text-[var(--color-text-muted)] hover:text-red-400">
+            <button onClick={() => setShowLogoutConfirm(true)} className="flex size-11 items-center justify-center rounded-lg text-[var(--color-text-muted)] transition-colors hover:bg-white/5 hover:text-red-400">
               <LogOut size={18} />
             </button>
           </div>

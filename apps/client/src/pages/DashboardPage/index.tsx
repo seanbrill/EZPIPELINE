@@ -170,7 +170,17 @@ export interface Artifact {
  * Stating the height once removes the question. Icon-only buttons take
  * `aspect-square` with it so they are round-ish rather than tall and thin.
  */
-const RUN_CTRL_H = "h-7";
+/**
+ * 28px on a pointer, 40px on a phone.
+ *
+ * `h-7` is a deliberate density for a mouse and far under the floor for a
+ * thumb - Logs, the settings gear and the delete button all measured 28px on
+ * a 393px screen, and they are the controls somebody actually reaches for on
+ * a build card. `max-sm:` only, so the desktop rows keep the density this
+ * constant exists to state and nothing gets taller for a pointer that does
+ * not need it.
+ */
+const RUN_CTRL_H = "h-7 max-sm:h-10";
 
 /**
  * What a run contained, and what it produced.
@@ -577,7 +587,14 @@ const DashboardPage: React.FC = () => {
     type ModalTarget = { pipeline: Pipeline; tab?: 'steps' | 'environment' | 'resources' | 'schedule' | 'history' | 'versions'; buildId?: string };
     const [activePipeline, setActivePipeline] = useState<ModalTarget | null>(null);
     const [sidebarCollapsed, setSidebarCollapsed] = useState(
-        () => readJSON<boolean>(SIDEBAR_KEY, false)
+        // ── COLLAPSED BY DEFAULT ON A PHONE ──────────────────────────────
+        //
+        // Expanded it is a drawer OVER the dashboard, so defaulting it open
+        // means every visit lands on the file tree with the builds hidden
+        // behind it. A stored preference still wins - somebody who opened it
+        // on this device meant it - and the default only decides the first
+        // visit, where showing the thing the page is for is the better guess.
+        () => readJSON<boolean>(SIDEBAR_KEY, typeof window !== "undefined" && window.innerWidth < 640)
     );
     const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
     const [newGroupName, setNewGroupName] = useState("");
@@ -1529,7 +1546,18 @@ const DashboardPage: React.FC = () => {
         <div className="flex flex-col h-full bg-[var(--color-bg)]">
             <div className="flex flex-1 overflow-hidden">
                 {/* Sidebar */}
-                <div className={`bg-[var(--color-surface)] border-r border-slate-700 flex flex-col pt-4 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-12' : 'w-64'}`}>
+                {/* ── ON A PHONE IT OVERLAYS, IT DOES NOT TAKE THE WIDTH ──────────
+                    Expanded, this is 256px of a 393px screen - so `main` got
+                    137px and every row inside it overflowed a column that was
+                    never going to hold them. The page does not scroll sideways
+                    either, so all of it was unreachable rather than merely
+                    off to the right.
+
+                    Out of flow below `sm`: main gets the whole width and the
+                    tree slides over it, which is what a drawer on a phone has
+                    always been. The collapse control stays inside it, so
+                    there is a way back out. From `sm` up nothing changes. */}
+                <div className={`bg-[var(--color-surface)] border-r border-slate-700 flex flex-col pt-4 flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-12' : 'w-64 max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:z-40 max-sm:shadow-2xl max-sm:shadow-black/60'}`}>
                     {!sidebarCollapsed ? (
                         <div className="flex-1 flex flex-col min-h-0">
                             <FileTreeSidebar
@@ -1635,10 +1663,14 @@ const DashboardPage: React.FC = () => {
                     {/* Quick Run Bar */}
                     <div className="bg-[var(--color-surface)] border-b border-slate-700/50 p-4 flex-shrink-0 z-10 shadow-sm">
                         <h2 className="text-lg font-bold text-[var(--color-text)] whitespace-nowrap mb-7">Quick Run</h2>
-                        <div className="flex gap-4 items-center p-4 bg-[var(--color-surface)] border border-[var(--color-text-muted)]/25 rounded-lg shadow-sm">
+                        {/* Wraps: the label, the picker and the Run button are
+                            405px of row on a 393px screen, and the page does not
+                            scroll sideways - so Run was unreachable rather than
+                            merely off to the side. */}
+                        <div className="flex flex-wrap gap-3 sm:gap-4 items-center p-3 sm:p-4 bg-[var(--color-surface)] border border-[var(--color-text-muted)]/25 rounded-lg shadow-sm">
                             <span className="text-sm font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Quick Run</span>
                             {filteredPipelines.length > 0 ? (
-                                <div className="flex gap-2 flex-1">
+                                <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:flex-1">
                                     {/* Was a native <select>, which cannot be searched, cannot
                                         group, and dealt with two pipelines sharing a name by
                                         appending "(group)" to both. See PipelinePicker. */}
@@ -1685,8 +1717,13 @@ const DashboardPage: React.FC = () => {
                     </div>
 
                     {/* Build History List */}
-                    <div className="flex-1 overflow-y-auto px-8 py-6 space-y-4 custom-scrollbar">
-                        <div className="mb-4 flex items-center justify-between">
+                    <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-8 sm:py-6 space-y-4 custom-scrollbar">
+                        {/* Wraps, and the title may shrink. "Notch.fm Pipelines"
+                            beside Expand all, Group Config and a delete button is
+                            a row nothing on a phone can hold, and it did not
+                            scroll - the title sat ON TOP of the buttons and the
+                            last one was off the edge. */}
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-y-3 gap-x-2">
                             <div>
                                 <h2 className="text-2xl font-bold text-white flex items-center gap-2">
                                     <Folder className="w-6 h-6 text-emerald-500" />
@@ -1716,7 +1753,7 @@ const DashboardPage: React.FC = () => {
                                     <p className="text-[var(--color-text-muted)] text-sm mt-1">Recent builds for this group</p>
                                 )}
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 {/* Only when there is something to act on. A
                                     control that does nothing is worse than an
                                     absent one: it invites a press and then
@@ -1724,7 +1761,7 @@ const DashboardPage: React.FC = () => {
                                 {visibleBuildHistory.length > 0 && (
                                     <button
                                         onClick={toggleAllVisible}
-                                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                        className="text-xs max-sm:min-h-10 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
                                         title={
                                             allVisibleExpanded
                                                 ? `Collapse all ${visibleBuildHistory.length} runs shown here`
@@ -1741,7 +1778,7 @@ const DashboardPage: React.FC = () => {
                                 {selectedGroup && (
                                     <button
                                         onClick={() => setConfiguringGroup(selectedGroup)}
-                                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                        className="text-xs max-sm:min-h-10 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
                                         title={`Environment and resources shared by every pipeline in ${selectedGroup}`}
                                     >
                                         <Key className="w-3.5 h-3.5" />
@@ -1750,7 +1787,7 @@ const DashboardPage: React.FC = () => {
                                 )}
                                 <button
                                     onClick={() => clearHistory(selectedGroup || undefined)}
-                                    className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
+                                    className="text-xs max-sm:min-h-10 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 px-3 py-1.5 rounded transition-colors flex items-center gap-1.5"
                                     title={selectedGroup ? `Clear history for ${selectedGroup}` : "Clear root history"}
                                 >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1763,7 +1800,7 @@ const DashboardPage: React.FC = () => {
                             <>
                             {visibleBuildHistory.map((build) => (
                                 <div key={build.id} className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-slate-600 transition-colors">
-                                    <div className={`p-4 bg-slate-900/50 flex items-center justify-between gap-4 ${expandedSet.has(build.id) ? 'border-b border-slate-700' : ''}`}>
+                                    <div className={`p-3 sm:p-4 bg-slate-900/50 flex flex-wrap items-center justify-between gap-3 ${expandedSet.has(build.id) ? 'border-b border-slate-700' : ''}`}>
                                         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                                             {/* THE DISCLOSURE, first in the row.
                                                 It is the control that decides what
@@ -1772,7 +1809,7 @@ const DashboardPage: React.FC = () => {
                                             <button
                                                 type="button"
                                                 onClick={() => toggleBuildExpanded(build.id)}
-                                                className="shrink-0 -ml-1 rounded p-0.5 text-slate-500 hover:bg-slate-700 hover:text-white transition-colors"
+                                                className="shrink-0 -ml-1 rounded p-0.5 max-sm:flex max-sm:size-10 max-sm:items-center max-sm:justify-center text-slate-500 hover:bg-slate-700 hover:text-white transition-colors"
                                                 aria-expanded={expandedSet.has(build.id)}
                                                 aria-label={`${expandedSet.has(build.id) ? 'Collapse' : 'Expand'} the steps of build ${build.buildNumber}`}
                                                 title={expandedSet.has(build.id) ? 'Hide the steps' : 'Show the steps'}
@@ -1859,7 +1896,7 @@ const DashboardPage: React.FC = () => {
                                             changed width.
                                             Information reads left to right; the things you can press
                                             are always in the same place, whatever the run says. */}
-                                        <div className="flex shrink-0 items-center gap-2">
+                                        <div className="flex shrink-0 flex-wrap items-center gap-2">
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -1869,7 +1906,7 @@ const DashboardPage: React.FC = () => {
                                                 }}
                                                 title="Open this run's logs"
                                                 aria-label={`Open logs for build ${build.buildNumber}`}
-                                                className={`${RUN_CTRL_H} text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-2.5 rounded transition-colors flex items-center gap-1.5`}
+                                                className={`${RUN_CTRL_H} text-xs max-sm:min-h-10 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 hover:border-emerald-500/50 px-2.5 rounded transition-colors flex items-center gap-1.5`}
                                             >
                                                 <FileText className="w-3.5 h-3.5" />
                                                 Logs
