@@ -290,6 +290,49 @@ See [Kubernetes](kubernetes.md).
 
 ---
 
+## Reading a private repository
+
+A pipeline that clones a private repository, and a git watch that polls one,
+need a key the forge will accept. Each group has a **Credentials** tab, under
+**Group Config**, and a key can be made there:
+
+1. Select the group, open **Group Config**, then **Credentials**.
+2. **Generate a key**, and give it a name you will recognise. A new key is
+   made on the server. Its private half is encrypted and stored and is never
+   shown. Its public half appears on the row.
+3. **Copy** the public half and add it to the repository. On GitHub that is
+   the repository's Settings, Deploy keys, Add deploy key. Leave "Allow write
+   access" unticked for a key that pipelines only clone with.
+4. Put the repository's address in **Repository to test against** and press
+   **Test**. A key that is read with shows green when it can read.
+
+From then on every pipeline in that group, and in the folders inside it, runs
+git with that key, and so does every watch there. A run says which key it was
+given, in its log, before its first step. The repository's address is the
+ordinary one, `git@github.com:owner/repo.git`. No host alias, no change to
+this server's image and no rebuild are needed for a second repository.
+
+Three things to know.
+
+- **The nearest group that has a reading key wins.** A key on `Acme` covers
+  `Acme/Dev` and `Acme/Dev/Infra`, unless one of those has its own.
+- **It is a switch on each key, and it is off unless somebody turns it on.** A
+  generated key has it on. A key you pasted in has it off, because that is how
+  a key that can PUSH is stored for the merge action, and a key that can push
+  should not be handed to every step of every pipeline.
+- **Every git command in those pipelines then uses that key and no other.** A
+  step that clones a second repository needs that repository to accept the
+  same key, or its own `GIT_SSH_COMMAND` on the step, which wins.
+
+A group with no reading key behaves as it always has: git uses whatever key
+the server itself has.
+
+The merge action ("Promote to production") is separate. It uses a credential
+stored on the group its git watch is on, exactly, and needs one that can
+write.
+
+---
+
 ## Scheduling
 
 Schedules are cron expressions stored in the database, managed under a

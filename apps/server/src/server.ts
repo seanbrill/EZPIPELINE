@@ -28,6 +28,7 @@ import { migrateGitWatches } from "./migrations/008_git_watches.js";
 import { migrateBuildTriggeredBy } from "./migrations/009_build_triggered_by.js";
 import { migrateBuildProvenance } from "./migrations/010_build_provenance.js";
 import { migrateGitCredentials } from "./migrations/011_git_credentials.js";
+import { migrateGitCredentialReads } from "./migrations/012_git_credential_reads.js";
 import { SchedulerService } from "./services/SchedulerService.js";
 import { BuildService } from "./services/BuildService.js";
 import { GitWatchService } from "./services/GitWatchService.js";
@@ -88,6 +89,7 @@ try {
     migrateBuildTriggeredBy();
     migrateBuildProvenance();
     migrateGitCredentials();
+    migrateGitCredentialReads();
 } catch (e) {
     Logger.getInstance().warn(`Build triggered_by migration skipped or already applied: ${e}`);
 }

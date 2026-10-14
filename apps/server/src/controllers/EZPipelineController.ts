@@ -206,6 +206,7 @@ import { Build } from "../types/other";
 import { VersioningService } from "../services/VersioningService.js";
 import { ProvenanceService } from "../services/ProvenanceService.js";
 import { BuildService } from "../services/BuildService.js";
+import { readAccessForGroup } from "../services/gitCredentials.js";
 import { EventEmitter } from "events";
 
 // Serve static files (adjust paths as needed)
@@ -1316,6 +1317,24 @@ export default class EZPipelineController extends EventEmitter {
       buildLogger.info(`📂 Resources: ${resourceEnv['RESOURCES']}`);
     }
 
+    // WHICH KEY GIT READS WITH, worked out once for the run and SAID IN THE LOG.
+    //
+    // "Not even sure how the git credentials were set for ezpipeline" was the
+    // finding of the incident services/gitCredentials.ts opens with: the key
+    // was named on no screen. A clone that fails with "Repository not found"
+    // is nearly always the wrong key and never says so, so the run says which
+    // one it was given, before the first step.
+    //
+    // Nothing is printed when the group has no reading credential, which is
+    // every pipeline that existed before this did: they use the host's key
+    // exactly as they always have.
+    const gitRead = readAccessForGroup(pipeline.group);
+    if (gitRead.command && gitRead.credential) {
+      buildLogger.info(`🔑 git in this run reads with "${gitRead.credential.name}", stored on ${gitRead.credential.group}`);
+    } else if (gitRead.problem) {
+      buildLogger.error(`🔑 ${gitRead.problem}`);
+    }
+
 
     // Note: We used to create/fetch a BuildHistoryEntry here (in-memory). 
     // Now we rely on BuildService (DB) and the 'build' object state.
@@ -1388,6 +1407,10 @@ export default class EZPipelineController extends EventEmitter {
         const envVars = {
           ...process.env,
           PATH: newPath, // Override PATH
+          // Below every file and every step, so a scope or a step that sets
+          // its own GIT_SSH_COMMAND still wins: this is a default for the
+          // group, not a rule about what a step may do.
+          ...(gitRead.command ? { GIT_SSH_COMMAND: gitRead.command } : {}),
           // The layers loaded above, most specific last.
           //
           // These were composed and then not applied: the refactor that

@@ -202,12 +202,17 @@ router.get("/git-watches", authenticateToken, (req, res) => {
 
 /** Check a repo/branch is reachable BEFORE saving a watch that never fires. */
 router.post("/git-watches/probe", authenticateToken, async (req, res) => {
-    const { repoUrl, branch } = req.body ?? {};
+    const { repoUrl, branch, groupPath } = req.body ?? {};
     if (!repoUrl || !branch) {
         res.status(400).json({ error: "repoUrl and branch are required" });
         return;
     }
-    const result = await GitWatchService.getInstance().probe(String(repoUrl), String(branch));
+    // The group is optional and only chooses the key: see GitWatchService.probe.
+    const result = await GitWatchService.getInstance().probe(
+        String(repoUrl),
+        String(branch),
+        typeof groupPath === "string" ? groupPath : null
+    );
     res.json(result);
 });
 

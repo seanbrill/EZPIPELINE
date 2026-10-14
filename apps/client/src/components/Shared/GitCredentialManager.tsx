@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Key, Plus, Trash2, CheckCircle2, XCircle, AlertTriangle, Loader2, HelpCircle } from 'lucide-react';
+import { Key, Plus, Trash2, CheckCircle2, XCircle, AlertTriangle, Loader2, HelpCircle, KeyRound, Copy } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmationContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -19,6 +19,14 @@ import API_URL from '../../config/api';
  * "never tested" is its own state rather than being collapsed into "no". The
  * read-only key was never-tested for its entire life, and a screen that showed
  * a red cross would at least have been wrong loudly.
+ *
+ * AND A KEY CAN BE MADE HERE. Giving this server a second repository used to
+ * mean `docker exec ... ssh-keygen`, a second command to print the public
+ * half, an edit to the server's own Dockerfile so ssh knew which key went
+ * with which repository, and a rebuild. "Generate a key" does the first two
+ * and the switch beside each key does the rest: pipelines and watches in the
+ * group read with it. The public half stays on the row, because it is the
+ * half a person needs and it is not a secret.
  */
 
 interface Cred {
@@ -28,6 +36,10 @@ interface Cred {
     kind: 'ssh_key' | 'token';
     username: string | null;
     createdAt: string;
+    /** The half that is added to the repository. Null for a key that was pasted in. */
+    publicKey: string | null;
+    /** Whether pipelines and watches in this group read with it. */
+    useForReads: boolean;
     test: {
         at: string | null;
         identity: string | null;
@@ -47,6 +59,13 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
     const [adding, setAdding] = useState(false);
     const [testing, setTesting] = useState<number | null>(null);
     const [form, setForm] = useState({ name: '', kind: 'ssh_key' as Cred['kind'], secret: '', username: '' });
+    const [generating, setGenerating] = useState(false);
+    const [generateName, setGenerateName] = useState('');
+    const [busy, setBusy] = useState(false);
+    // The repository a test is run against. Blank means this group's own
+    // watch, which is right once there is one and impossible before: a key is
+    // made, added to the forge and tested BEFORE the watch that will use it.
+    const [testRepo, setTestRepo] = useState('');
 
     const load = useCallback(async () => {
         if (!token) return;
@@ -82,19 +101,74 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
         }
     };
 
+    const generate = async () => {
+        setBusy(true);
+        try {
+            const res = await fetch(`${API_URL}/api/git-credentials/${g}/generate`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: generateName }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || String(res.status));
+            toast.success(`Made ${generateName}. Add its public key to the repository, then test it.`);
+            setGenerateName('');
+            setGenerating(false);
+            await load();
+        } catch (e) {
+            toast.error((e as Error).message);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const setReads = async (c: Cred, on: boolean) => {
+        try {
+            const res = await fetch(`${API_URL}/api/git-credentials/${g}/${c.id}`, {
+                method: 'PUT',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ useForReads: on }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || String(res.status));
+            toast.success(on
+                ? `Pipelines and watches in ${group} now read with ${c.name}`
+                : `${c.name} is no longer read with. Pipelines here are back on the host's own key.`);
+            await load();
+        } catch (e) {
+            toast.error((e as Error).message);
+        }
+    };
+
+    const copyPublicKey = async (c: Cred) => {
+        if (!c.publicKey) return;
+        try {
+            await navigator.clipboard.writeText(c.publicKey);
+            toast.success('Public key copied');
+        } catch {
+            // No clipboard without https or a user gesture the browser accepts.
+            // The key is on the screen to be selected by hand, so say that.
+            toast.error('Could not copy. Select the key and copy it by hand.');
+        }
+    };
+
     const test = async (c: Cred) => {
         setTesting(c.id);
         try {
             const res = await fetch(`${API_URL}/api/git-credentials/${g}/${c.id}/test`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
+                body: JSON.stringify(testRepo.trim() ? { repoUrl: testRepo.trim() } : {}),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || String(res.status));
             // The WRITE result is the one worth announcing, because it is the
-            // one that was silently wrong for months.
+            // one that was silently wrong for months. Unless the key is only
+            // there to be read with: then reading is the whole job, and
+            // calling a read-only deploy key a failure would send somebody to
+            // give it write access it should not have.
             if (data.test?.canWrite) toast.success(`${c.name} can read and write ${data.repoUrl}`);
+            else if (data.test?.canRead && c.useForReads) toast.success(`${c.name} can read ${data.repoUrl}, which is what a clone and a watch need`);
             else if (data.test?.canRead) toast.error(`${c.name} can READ but not WRITE. A merge would fail.`);
             else toast.error(`${c.name} could not reach the repository`);
             await load();
@@ -145,6 +219,16 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
                 </span>
             );
         }
+        if (c.test.canRead && c.useForReads) {
+            // Read only is the RIGHT answer for a key that is read with, and
+            // amber would say otherwise.
+            return (
+                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Can read - all a clone and a watch need. It cannot push.
+                </span>
+            );
+        }
         if (c.test.canRead) {
             return (
                 <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
@@ -164,10 +248,26 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
     return (
         <div className="flex flex-col gap-3">
             <p className="text-xs text-slate-400 leading-relaxed">
-                What this group&rsquo;s pipelines authenticate to git with. Without one they
-                use whatever the server host happens to have, which is unnamed, unreadable
-                from here, and how a read-only deploy key went unnoticed for months.
+                What this group authenticates to git with. A key switched on for reading is
+                what its pipelines clone with and its watches poll with, here and in the
+                folders inside it. The merge action uses a credential stored on its own
+                group. Without one, git uses whatever the server host happens to have, which
+                is unnamed, unreadable from here, and how a read-only deploy key went
+                unnoticed for months.
             </p>
+
+            <div>
+                <label htmlFor="cred-test-repo" className="block text-[11px] text-slate-500 mb-1">
+                    Repository to test against (blank uses this group&rsquo;s watch)
+                </label>
+                <input
+                    id="cred-test-repo"
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white font-mono"
+                    placeholder="git@github.com:owner/repo.git"
+                    value={testRepo}
+                    onChange={(e) => setTestRepo(e.target.value)}
+                />
+            </div>
 
             {creds === null ? (
                 <p className="text-xs text-slate-500">Loading&hellip;</p>
@@ -197,10 +297,47 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
                                             {c.test.identity}
                                         </p>
                                     )}
-                                    {c.test.error && (
+                                    {c.test.error && !(c.useForReads && c.test.canRead) && (
                                         <p className="mt-1 text-[11px] text-amber-300/90 leading-relaxed">
                                             {c.test.error}
                                         </p>
+                                    )}
+                                    {c.kind === 'ssh_key' && (
+                                        <label className="mt-2 flex items-start gap-2 text-[11px] text-slate-300 leading-relaxed cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                className="mt-0.5"
+                                                checked={c.useForReads}
+                                                onChange={(e) => void setReads(c, e.target.checked)}
+                                            />
+                                            <span>
+                                                Pipelines and watches in this group, and in the folders inside it,
+                                                read with this key. Leave it off for a key that can push.
+                                            </span>
+                                        </label>
+                                    )}
+                                    {c.publicKey && (
+                                        <div className="mt-2">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-[11px] text-slate-500">
+                                                    Public key. Add it to the repository as a deploy key.
+                                                </span>
+                                                <button
+                                                    onClick={() => void copyPublicKey(c)}
+                                                    className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400"
+                                                    aria-label={`Copy the public key of ${c.name}`}
+                                                >
+                                                    <Copy className="w-3 h-3" />
+                                                    Copy
+                                                </button>
+                                            </div>
+                                            <pre
+                                                className="mt-1 text-[11px] text-slate-300 font-mono bg-slate-800 border border-slate-700 rounded p-2 whitespace-pre-wrap break-all select-all"
+                                                data-testid={`public-key-${c.id}`}
+                                            >
+                                                {c.publicKey}
+                                            </pre>
+                                        </div>
                                     )}
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
@@ -278,14 +415,55 @@ const GitCredentialManager: React.FC<{ group: string }> = ({ group }) => {
                         </button>
                     </div>
                 </div>
+            ) : generating ? (
+                <div className="border border-slate-700 rounded-lg p-3 flex flex-col gap-2 bg-slate-900/40">
+                    <input
+                        className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm text-white"
+                        placeholder="Name you will recognise, e.g. FileFreak.io deploy key"
+                        aria-label="Name for the new key"
+                        value={generateName}
+                        onChange={(e) => setGenerateName(e.target.value)}
+                    />
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                        A new key is made on this server. Its private half is encrypted and
+                        stored without ever being shown. Its public half appears on the row,
+                        for you to add to the repository: on GitHub, the repository&rsquo;s
+                        Settings, Deploy keys, Add deploy key. Leave &ldquo;Allow write
+                        access&rdquo; unticked for a key that pipelines only clone with.
+                    </p>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => void generate()}
+                            disabled={busy || generateName.trim() === ''}
+                            className="text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold disabled:opacity-50"
+                        >
+                            {busy ? 'Making it...' : 'Generate'}
+                        </button>
+                        <button
+                            onClick={() => setGenerating(false)}
+                            className="text-xs px-3 py-1.5 rounded border border-slate-600 text-slate-300 hover:text-white"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
             ) : (
-                <button
-                    onClick={() => setAdding(true)}
-                    className="self-start inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400"
-                >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add a credential
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                    <button
+                        onClick={() => setGenerating(true)}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold"
+                    >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        Generate a key
+                    </button>
+                    <button
+                        onClick={() => setAdding(true)}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400"
+                    >
+                        <Plus className="w-3.5 h-3.5" />
+                        Add one you already have
+                    </button>
+                </div>
             )}
         </div>
     );

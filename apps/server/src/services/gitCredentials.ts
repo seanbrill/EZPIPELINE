@@ -20,8 +20,17 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseService } from "./Database.js";
@@ -103,6 +112,10 @@ export interface GitCredentialRow {
   test_can_write: number | null;
   test_error: string | null;
   created_at: string;
+  /** The half that goes on the forge. Null for a key that was pasted in: only its private half was ever given. */
+  public_key: string | null;
+  /** 1 when pipelines and watches in this group read with it. See "Reading with one" below. */
+  use_for_reads: number;
 }
 
 /** What the browser is allowed to see: everything except the secret. */
@@ -113,6 +126,9 @@ export interface GitCredentialView {
   kind: CredentialKind;
   username: string | null;
   createdAt: string;
+  /** Not a secret: it is the half that is handed to the forge. */
+  publicKey: string | null;
+  useForReads: boolean;
   test: {
     at: string | null;
     identity: string | null;
@@ -130,6 +146,8 @@ export function toView(r: GitCredentialRow): GitCredentialView {
     kind: r.kind,
     username: r.username,
     createdAt: r.created_at,
+    publicKey: r.public_key ?? null,
+    useForReads: r.use_for_reads === 1,
     test: {
       at: r.last_tested_at,
       identity: r.test_identity,
@@ -202,12 +220,15 @@ export function createCredential(input: {
   secret: string;
   username?: string | null;
   createdBy?: number | null;
+  publicKey?: string | null;
+  useForReads?: boolean;
 }): GitCredentialView {
   const db = DatabaseService.getInstance().getDb();
   const info = db
     .prepare(
-      `INSERT INTO git_credentials (group_path, name, kind, secret, username, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO git_credentials
+         (group_path, name, kind, secret, username, created_by, public_key, use_for_reads)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.group,
@@ -215,14 +236,277 @@ export function createCredential(input: {
       input.kind,
       encryptCredential(input.secret),
       input.username?.trim() || null,
-      input.createdBy ?? null
+      input.createdBy ?? null,
+      input.publicKey?.trim() || null,
+      // Only a key can be read with: see readCredentialForGroup.
+      input.useForReads && input.kind === "ssh_key" ? 1 : 0
     );
   return toView(getCredential(Number(info.lastInsertRowid))!);
 }
 
 export function deleteCredential(id: number): boolean {
   const db = DatabaseService.getInstance().getDb();
-  return db.prepare(`DELETE FROM git_credentials WHERE id = ?`).run(id).changes > 0;
+  const gone = db.prepare(`DELETE FROM git_credentials WHERE id = ?`).run(id).changes > 0;
+  // The copy that steps were reading with goes too, or a deleted credential
+  // would carry on working until the server next restarted.
+  forgetKeyFiles(id);
+  return gone;
+}
+
+// ── Making one ──────────────────────────────────────────────────────────────
+//
+// THE REQUEST THIS ANSWERS. Giving EZPIPELINE a second repository to deploy
+// meant `docker exec ... ssh-keygen` into the data volume, a second command to
+// print the public half, an edit to this project's own Dockerfile so that ssh
+// knew which key went with which repository, and a rebuild. "Does ezpipeline
+// have a way to do this without running a command?" It did not.
+//
+// So the key is made HERE, by the same ssh-keygen an operator would have run,
+// and the private half goes straight into the encrypted column. It is never
+// shown, never written to the data volume, and never leaves this process. The
+// public half is kept and shown, because that is the half a person needs.
+
+/**
+ * A new ed25519 key pair, in the form OpenSSH writes and reads.
+ *
+ * ssh-keygen and not node:crypto on purpose. Node can make the key, but it
+ * exports PKCS#8, and the format `ssh -i` wants is OpenSSH's own. Converting
+ * by hand is a page of code about byte layouts whose only failure message is
+ * "invalid format". The program that defines the format is already in the
+ * image, because the instructions this replaces called it.
+ *
+ * execFile with an argument list, so the comment (which comes from a form) is
+ * one argument and never a piece of a command line.
+ */
+export async function generateKeyPair(comment: string): Promise<{ privateKey: string; publicKey: string }> {
+  const dir = mkdtempSync(join(tmpdir(), "ezp-keygen-"));
+  try {
+    const file = join(dir, "id");
+    // A comment is one line of printable text. Anything else is dropped rather
+    // than refused: it is a label on a key, not a thing worth an error.
+    const label = comment.replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 120) || "ezpipeline";
+    // -N "" is "no passphrase". Nobody is there to type one when a pipeline
+    // runs at three in the morning, and what protects this key at rest is the
+    // encrypted column, not a passphrase that would have to be stored beside it.
+    await run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", label, "-f", file], {
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return {
+      privateKey: readFileSync(file, "utf8"),
+      publicKey: readFileSync(`${file}.pub`, "utf8").trim(),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Make a key and store it for a group, already switched on for reading: that is what a new deploy key is for. */
+export async function generateSshCredential(input: {
+  group: string;
+  name: string;
+  createdBy?: number | null;
+}): Promise<GitCredentialView> {
+  const pair = await generateKeyPair(`ezpipeline: ${input.name}`);
+  return createCredential({
+    group: input.group,
+    name: input.name,
+    kind: "ssh_key",
+    secret: pair.privateKey,
+    publicKey: pair.publicKey,
+    useForReads: true,
+    createdBy: input.createdBy ?? null,
+  });
+}
+
+// ── Reading with one ────────────────────────────────────────────────────────
+//
+// Until this section existed, a stored credential was used by exactly one
+// thing: the merge action. The two things that READ a repository on every
+// push, a pipeline's own `git clone` and a watch's `git ls-remote`, went to
+// whatever key the container had, chosen by /root/.ssh/config. One key, baked
+// into the image, a deploy key of one repository. A second repository needed
+// a second `Host` block in the Dockerfile and a rebuild.
+//
+// A credential marked for reading replaces that. Pipelines in its group, and
+// in the folders inside it, are given GIT_SSH_COMMAND naming this key, and so
+// is every watch there.
+//
+// IT IS A SWITCH PER CREDENTIAL, AND IT IS OFF UNLESS SOMEBODY TURNS IT ON.
+// Reading with a key means every step of every pipeline in the group can use
+// it. That is right for a read-only deploy key and wrong for the key somebody
+// stored so that the merge action could PUSH: the reason that key lives in
+// the store is that the clone, which runs on every commit, should never hold
+// something that can change the repository.
+
+/** A group and the groups it sits inside, nearest first: "A/B/C" gives A/B/C, A/B, A. */
+export function groupAndAncestors(group: string): string[] {
+  const parts = group.split(/[\\/]+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = parts.length; i >= 1; i--) out.push(parts.slice(0, i).join("/"));
+  return out;
+}
+
+/**
+ * Which of a group's reading keys to use: one PROVEN to read, then one nobody
+ * has tested, then one that was tested and could not. The same three ranks as
+ * credentialForGroup and for the same reason, with `read` where that has
+ * `write`. Newest test first within a rank, then newest row.
+ */
+export function rankForReading<T extends Pick<GitCredentialRow, "id" | "test_can_read" | "last_tested_at">>(rows: T[]): T[] {
+  const rank = (r: T) => (r.test_can_read === 1 ? 0 : r.test_can_read === null ? 1 : 2);
+  return [...rows].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (b.last_tested_at ?? "").localeCompare(a.last_tested_at ?? "") ||
+      b.id - a.id
+  );
+}
+
+/**
+ * The key a pipeline or a watch in this group reads with, or null for "the
+ * host's own", which is what every instance did before this existed.
+ *
+ * THE NEAREST GROUP THAT HAS ONE WINS, walking outward. A key stored on
+ * `FileFreak` covers `FileFreak/Dev` and `FileFreak/Dev/Infra`, the way a
+ * variable set on a group reaches the pipelines filed under it. That is the
+ * opposite of credentialForGroup, which matches one group exactly, and the
+ * difference is deliberate: a merge is a write and should be granted where it
+ * is named, while one repository's read key is wanted by every pipeline that
+ * builds it, and storing three copies is three things to rotate.
+ */
+export function readCredentialForGroup(group: string): GitCredentialRow | null {
+  const db = DatabaseService.getInstance().getDb();
+  const find = db.prepare(
+    `SELECT * FROM git_credentials WHERE group_path = ? AND kind = 'ssh_key' AND use_for_reads = 1`
+  );
+  for (const g of groupAndAncestors(group)) {
+    const rows = find.all(g) as GitCredentialRow[];
+    if (rows.length > 0) return rankForReading(rows)[0] ?? null;
+  }
+  return null;
+}
+
+/**
+ * The ssh command git is told to use for one key.
+ *
+ * -F /dev/null IS THE POINT. Without it ssh also reads /root/.ssh/config,
+ * whose `Host github.com` block names the container's own key. ssh then has
+ * two identities for one host, GitHub accepts whichever it recognises first,
+ * and a deploy key is tied to ONE repository: authenticate as the wrong one
+ * and the answer is "Repository not found" while the right key sits unused.
+ * With no config file there is one identity, and it is this one.
+ *
+ * The known hosts file is not affected: that is read from ~/.ssh/known_hosts
+ * whatever -F says, so the host keys the image verified are still what a
+ * connection is checked against. accept-new is for a forge this server has
+ * never spoken to, and it still refuses a host whose key has CHANGED.
+ */
+export function sshCommandFor(keyPath: string): string {
+  return (
+    `ssh -F /dev/null -i '${keyPath}' -o IdentitiesOnly=yes -o BatchMode=yes ` +
+    `-o StrictHostKeyChecking=accept-new`
+  );
+}
+
+/**
+ * Where the keys that steps read with are written.
+ *
+ * In the container's own temporary directory and NOT the data volume: the
+ * volume is where the encrypted copy lives, and a plaintext copy beside it
+ * would make the encryption decoration. This directory is lost when the
+ * container is recreated, and each file is written again the first time it is
+ * wanted.
+ *
+ * A step is a shell script running as the same user as this server, so a step
+ * that goes looking can read any file here, as it always could read the key
+ * in /app/apps/server/data/ssh. What changes is what a step is HANDED: only
+ * the key of its own group.
+ */
+const READ_KEY_DIR = join(tmpdir(), "ezp-read-keys");
+
+/** Remove every copy of one credential's key that steps could be reading with. */
+export function forgetKeyFiles(id: number): void {
+  try {
+    for (const name of readdirSync(READ_KEY_DIR)) {
+      if (name.startsWith(`${id}-`)) rmSync(join(READ_KEY_DIR, name), { force: true });
+    }
+  } catch {
+    // The directory is made the first time a key is wanted. Not there yet
+    // means there is nothing to forget.
+  }
+}
+
+/** The path of this credential's key, written if it is not there. Null when it cannot be decrypted. */
+export function readKeyFile(cred: GitCredentialRow): string | null {
+  // Named for the STORED form, so a credential that is replaced gets a new
+  // file and the old one is not read by mistake, and so that finding the file
+  // already there costs no decryption.
+  const mark = createHash("sha256").update(cred.secret).digest("hex").slice(0, 16);
+  const file = join(READ_KEY_DIR, `${cred.id}-${mark}`);
+  if (existsSync(file)) return file;
+
+  const secret = decryptCredential(cred.secret);
+  if (secret === null) return null;
+  mkdirSync(READ_KEY_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(READ_KEY_DIR, 0o700);
+  forgetKeyFiles(cred.id);
+  // 0600 twice, as gitWith does: the mode passed to writeFileSync is masked
+  // by the umask, and ssh refuses a key anybody else could read.
+  writeFileSync(file, keyBytes(secret), { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return file;
+}
+
+export interface ReadAccess {
+  /** GIT_SSH_COMMAND for this group, or null to leave git to the host's own configuration. */
+  command: string | null;
+  /** Which credential that is, so a build log can say so. */
+  credential: { name: string; group: string } | null;
+  /** Set when a credential was meant to be used and could not be. */
+  problem: string | null;
+}
+
+/**
+ * What git should read with for a pipeline or a watch in this group.
+ *
+ * Never throws. A run that cannot work out its key should still start and say
+ * why in its own log, where the person looking at a failed clone will read
+ * it, rather than die before the first step with a database error.
+ */
+export function readAccessForGroup(group: string | null | undefined): ReadAccess {
+  const none: ReadAccess = { command: null, credential: null, problem: null };
+  if (!group) return none;
+  try {
+    const cred = readCredentialForGroup(group);
+    if (!cred) return none;
+    const named = { name: cred.name, group: cred.group_path };
+    const file = readKeyFile(cred);
+    if (!file) {
+      return {
+        command: null,
+        credential: named,
+        problem:
+          `the credential "${cred.name}" on ${cred.group_path} could not be decrypted, so git is using ` +
+          `the host's own key. The usual cause is a changed JWT_SECRET; delete it and make it again.`,
+      };
+    }
+    return { command: sshCommandFor(file), credential: named, problem: null };
+  } catch (e) {
+    return { command: null, credential: null, problem: `could not look up this group's git credential: ${e}` };
+  }
+}
+
+/** Switch reading with a credential on or off. Only a key can be read with. */
+export function setUseForReads(id: number, on: boolean): GitCredentialView | null {
+  const row = getCredential(id);
+  if (!row) return null;
+  if (on && row.kind !== "ssh_key") {
+    throw new Error("Only an SSH key can be read with. A token is used by the merge action alone.");
+  }
+  const db = DatabaseService.getInstance().getDb();
+  db.prepare(`UPDATE git_credentials SET use_for_reads = ? WHERE id = ?`).run(on ? 1 : 0, id);
+  if (!on) forgetKeyFiles(id);
+  return toView(getCredential(id)!);
 }
 
 // ── Using one ───────────────────────────────────────────────────────────────

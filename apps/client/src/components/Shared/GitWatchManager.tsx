@@ -126,11 +126,22 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
         }
         setBusy(true);
         try {
+            // The watch belongs where the PIPELINE lives, not where you happened
+            // to be standing when you created it. Saving the viewing group would
+            // file a Notch.fm/Dev pipeline's watch under Notch.fm, where it would
+            // then vanish the moment somebody opened Dev to look for it.
+            const groupPath = targets.find(t => t.id === pipelineTarget)?.group ?? group;
+
             // Check the remote BEFORE saving. A watch against a URL this server
             // cannot read is silent: it never fires, and looks identical to a
             // branch nobody has pushed to.
+            //
+            // Asked as the group the watch will live in, so the check uses the
+            // key the watch itself will use. Asked with the host's key, a
+            // repository that only this group's own key can read was called
+            // unreachable and the watch was never saved.
             const probe = await fetch(`${API_URL}/api/git-watches/probe`, {
-                method: 'POST', headers, body: JSON.stringify({ repoUrl, branch }),
+                method: 'POST', headers, body: JSON.stringify({ repoUrl, branch, groupPath }),
             }).then(r => r.json());
 
             if (!probe.ok) {
@@ -138,12 +149,6 @@ const GitWatchManager: React.FC<{ group: string }> = ({ group }) => {
                 setBusy(false);
                 return;
             }
-
-            // The watch belongs where the PIPELINE lives, not where you happened
-            // to be standing when you created it. Saving the viewing group would
-            // file a Notch.fm/Dev pipeline's watch under Notch.fm, where it would
-            // then vanish the moment somebody opened Dev to look for it.
-            const groupPath = targets.find(t => t.id === pipelineTarget)?.group ?? group;
 
             const res = await fetch(`${API_URL}/api/git-watches`, {
                 method: 'POST', headers,

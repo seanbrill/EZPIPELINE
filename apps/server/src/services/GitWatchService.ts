@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { DatabaseService } from "../services/Database.js";
 import Logger from "../controllers/Logger.js";
 import EZPipelineController from "../controllers/EZPipelineController.js";
+import { readAccessForGroup } from "./gitCredentials.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -122,8 +123,18 @@ export class GitWatchService {
         }
     }
 
-    /** The head sha of one branch, or null if the remote could not be read. */
-    private async headSha(repoUrl: string, branch: string): Promise<string> {
+    /**
+     * The head sha of one branch, or null if the remote could not be read.
+     *
+     * `group` is the watch's own. A watch polls a repository that the group's
+     * pipelines then clone, so it reads with the same key they do: the
+     * nearest reading credential, or the host's own when there is none. A
+     * watch that used a different key from the run it starts would report a
+     * repository as reachable that the run then cannot clone, or the reverse.
+     */
+    private async headSha(repoUrl: string, branch: string, group?: string | null): Promise<string> {
+        const read = readAccessForGroup(group);
+        if (read.problem) this.logger.warn(`Git watch on ${group}: ${read.problem}`);
         // execFile, never a shell string: repo_url and branch come from a form,
         // and `git ls-remote "$(rm -rf ~)"` is not a risk worth taking for the
         // convenience of string interpolation.
@@ -134,7 +145,12 @@ export class GitWatchService {
                 timeout: LS_REMOTE_TIMEOUT_MS,
                 // Never let git stop and ask for a password on a private repo:
                 // an interactive prompt in a background poller hangs forever.
-                env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "echo" },
+                env: {
+                    ...process.env,
+                    GIT_TERMINAL_PROMPT: "0",
+                    GIT_ASKPASS: "echo",
+                    ...(read.command ? { GIT_SSH_COMMAND: read.command } : {}),
+                },
             }
         );
         const line = stdout.split("\n").find((l) => l.trim());
@@ -150,7 +166,7 @@ export class GitWatchService {
 
         let sha: string;
         try {
-            sha = await this.headSha(w.repo_url, w.branch);
+            sha = await this.headSha(w.repo_url, w.branch, w.group_path);
         } catch (e: any) {
             const msg = String(e?.message ?? e).slice(0, 500);
             db.prepare(
@@ -392,10 +408,17 @@ export class GitWatchService {
         }
     }
 
-    /** Used by the routes to validate a repo/branch before saving a watch. */
-    async probe(repoUrl: string, branch: string): Promise<{ ok: boolean; sha?: string; error?: string }> {
+    /**
+     * Used by the routes to validate a repo/branch before saving a watch.
+     *
+     * Given the group the watch is being made on, it asks with that group's
+     * key, which is the one the saved watch will use. Asked without one, a
+     * repository only the group's own key can read was reported unreachable,
+     * and the watch that would have worked was never saved.
+     */
+    async probe(repoUrl: string, branch: string, group?: string | null): Promise<{ ok: boolean; sha?: string; error?: string }> {
         try {
-            const sha = await this.headSha(repoUrl, branch);
+            const sha = await this.headSha(repoUrl, branch, group);
             return { ok: true, sha };
         } catch (e: any) {
             return { ok: false, error: String(e?.message ?? e).slice(0, 500) };

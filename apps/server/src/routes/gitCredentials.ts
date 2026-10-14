@@ -18,9 +18,11 @@ import { DatabaseService } from "../services/Database.js";
 import {
   createCredential,
   deleteCredential,
+  generateSshCredential,
   getCredential,
   listCredentials,
   recordTest,
+  setUseForReads,
   testCredential,
   toView,
   type CredentialKind,
@@ -96,6 +98,69 @@ router.post("/:group", (req: Request, res: Response) => {
     }
     logger.error(`create git credential failed: ${e}`);
     res.status(500).json({ error: "Could not save that credential" });
+  }
+});
+
+/**
+ * Make a key here, instead of somewhere else and then pasting it in.
+ *
+ * The answer carries the PUBLIC half and nothing else of the key. That half
+ * is what gets added to the repository as a deploy key, and it stays readable
+ * on the credential afterwards. The private half is generated, encrypted and
+ * stored without ever being in a response.
+ *
+ * The new key is switched on for reading, because that is what a fresh deploy
+ * key is for: the group's pipelines clone with it and its watches poll with
+ * it. On the forge it is read-only until somebody ticks otherwise.
+ */
+router.post("/:group/generate", async (req: Request, res: Response) => {
+  const group = decodeURIComponent(req.params.group ?? "");
+  if (!allowed(req, res, group, "edit")) return;
+
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) return void res.status(400).json({ error: "Give it a name you will recognise" });
+
+  try {
+    res.status(201).json({
+      credential: await generateSshCredential({ group, name, createdBy: (req as any).user?.id ?? null }),
+    });
+  } catch (e: any) {
+    if (String(e?.message ?? "").includes("UNIQUE")) {
+      return void res.status(409).json({ error: `This group already has one called "${name}"` });
+    }
+    logger.error(`generate git credential failed: ${e}`);
+    // ssh-keygen missing is the one cause an operator can act on, so it is
+    // named. Anything else is in the server log.
+    const missing = String(e?.code ?? "") === "ENOENT";
+    res.status(500).json({
+      error: missing
+        ? "ssh-keygen is not installed on this server, so a key cannot be made here. Make one elsewhere and add it as a credential."
+        : "Could not make a key",
+    });
+  }
+});
+
+/**
+ * Switch reading with a credential on or off.
+ *
+ * On: every pipeline in this group and in the folders inside it runs git with
+ * this key, and so does every watch there. Off: they go back to the host's
+ * own. It is a switch and not automatic, because a key stored so that the
+ * merge action can PUSH should not be handed to every step of every pipeline.
+ */
+router.put("/:group/:id", (req: Request, res: Response) => {
+  const group = decodeURIComponent(req.params.group ?? "");
+  if (!allowed(req, res, group, "edit")) return;
+  const row = getCredential(Number(req.params.id));
+  // The group in the path is checked as well as the id, as for delete.
+  if (!row || row.group_path !== group) return void res.status(404).json({ error: "No such credential" });
+  if (typeof req.body?.useForReads !== "boolean") {
+    return void res.status(400).json({ error: "useForReads must be true or false" });
+  }
+  try {
+    res.json({ credential: setUseForReads(row.id, req.body.useForReads) });
+  } catch (e: any) {
+    res.status(400).json({ error: String(e?.message ?? e) });
   }
 });
 

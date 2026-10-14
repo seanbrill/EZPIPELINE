@@ -146,3 +146,230 @@ describe("credentialForGroup ordering", () => {
     assert.equal(first.name, "untested", "the one that might work beats the one that cannot");
   });
 });
+
+// ── Making a key here, and reading with one ────────────────────────────────
+//
+// THE REQUEST. Setting up a second repository meant `docker exec ... ssh-keygen`
+// into the data volume, a second command to print the public half, an edit to
+// this project's own Dockerfile so ssh knew which key went with which
+// repository, and a rebuild. "Does ezpipeline have a way to do this without
+// running a command?"
+//
+// Four properties are worth locking down:
+//
+//   THE KEY THAT IS MADE IS ONE OPENSSH ACCEPTS, AND ITS TWO HALVES MATCH. A
+//   public half that does not belong to the stored private half is a deploy
+//   key that authenticates as nobody, and the error is "Permission denied".
+//
+//   GIT IS HANDED ONE IDENTITY. The container's own ssh config names another
+//   key for the same host. Offered both, GitHub accepts whichever it knows
+//   first and a deploy key belongs to ONE repository.
+//
+//   THE NEAREST GROUP WINS, AND NOTHING IS READ WITH UNLESS SOMEBODY SAID SO.
+//   Every row that existed before this is a key stored for the merge action,
+//   and some of those can push.
+//
+//   A KEY THAT IS SWITCHED OFF OR DELETED STOPS BEING READABLE BY A STEP.
+
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync as writeFile } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const {
+  forgetKeyFiles,
+  generateKeyPair,
+  groupAndAncestors,
+  rankForReading,
+  readKeyFile,
+  sshCommandFor,
+} = await import("../src/services/gitCredentials.js");
+
+/** A row as the table holds one, for the functions that take a row and never ask the database. */
+const row = (id: number, secret: string) => ({
+  id,
+  group_path: "G",
+  name: `key ${id}`,
+  kind: "ssh_key" as const,
+  secret: encryptCredential(secret),
+  username: null,
+  last_tested_at: null,
+  test_identity: null,
+  test_can_read: null,
+  test_can_write: null,
+  test_error: null,
+  created_at: "",
+  public_key: null,
+  use_for_reads: 1,
+});
+
+describe("making a key", () => {
+  test("the two halves belong to each other, and OpenSSH reads the private one", async () => {
+    const pair = await generateKeyPair("ezpipeline: a test key");
+    assert.match(pair.privateKey, /^-----BEGIN OPENSSH PRIVATE KEY-----\n/);
+    assert.ok(pair.privateKey.endsWith("-----END OPENSSH PRIVATE KEY-----\n"), "the trailing newline OpenSSH insists on");
+    assert.match(pair.publicKey, /^ssh-ed25519 AAAA[A-Za-z0-9+/=]+ ezpipeline: a test key$/);
+
+    // Ask ssh-keygen what public key this private key has. That is the
+    // program whose opinion matters, and it refuses a key it cannot parse.
+    const dir = mkdtempSync(join(tmpdir(), "ezp-test-"));
+    try {
+      const file = join(dir, "id");
+      writeFile(file, pair.privateKey, { mode: 0o600 });
+      const derived = execFileSync("ssh-keygen", ["-y", "-f", file], { encoding: "utf8" }).trim();
+      assert.equal(derived.split(" ")[1], pair.publicKey.split(" ")[1], "the public half is not this private key's");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("two keys are two keys", async () => {
+    const [a, b] = await Promise.all([generateKeyPair("a"), generateKeyPair("b")]);
+    assert.notEqual(a.privateKey, b.privateKey);
+    assert.notEqual(a.publicKey.split(" ")[1], b.publicKey.split(" ")[1]);
+  });
+
+  test("a name from a form is a label, never part of a command", async () => {
+    const marker = join(tmpdir(), `ezp-injected-${process.pid}`);
+    rmSync(marker, { force: true });
+    const pair = await generateKeyPair(`x"; touch ${marker}; echo "\n$(touch ${marker})\`touch ${marker}\``);
+    assert.ok(!existsSync(marker), "the name was run as a command");
+    assert.match(pair.publicKey, /^ssh-ed25519 /);
+    // One line: a newline in a public key file is a second, unparseable key.
+    assert.equal(pair.publicKey.split("\n").length, 1);
+  });
+});
+
+describe("which key a group reads with", () => {
+  test("a group, then the groups it sits inside, nearest first", () => {
+    assert.deepEqual(groupAndAncestors("FileFreak/Dev/Infra"), ["FileFreak/Dev/Infra", "FileFreak/Dev", "FileFreak"]);
+    assert.deepEqual(groupAndAncestors("Notch.fm"), ["Notch.fm"]);
+    assert.deepEqual(groupAndAncestors(""), []);
+    // A pipeline's group is a path made by the operating system, and a group
+    // typed into a form may have a slash too many.
+    assert.deepEqual(groupAndAncestors("A\\B"), ["A/B", "A"]);
+    assert.deepEqual(groupAndAncestors("/A//B/"), ["A/B", "A"]);
+  });
+
+  test("a key proven to read beats one nobody has tested, which beats one that could not", () => {
+    const rows = [
+      { id: 1, test_can_read: 0, last_tested_at: "2026-01-03" },
+      { id: 2, test_can_read: null, last_tested_at: null },
+      { id: 3, test_can_read: 1, last_tested_at: "2026-01-01" },
+      { id: 4, test_can_read: 1, last_tested_at: "2026-01-02" },
+    ];
+    assert.deepEqual(rankForReading(rows).map((r: { id: number }) => r.id), [4, 3, 2, 1]);
+    // And it sorts a copy: the rows it was given are whoever's they were.
+    assert.deepEqual(rows.map((r) => r.id), [1, 2, 3, 4]);
+  });
+
+  test("only a key that was switched on is read with, and none that existed before is", () => {
+    // The table as migration 011 makes it, then 012's two columns, both lifted
+    // from the shipped source so this cannot pass against SQL that is not the
+    // SQL running.
+    const m11 = readFileSync(new URL("../src/migrations/011_git_credentials.ts", import.meta.url), "utf8");
+    const m12 = readFileSync(new URL("../src/migrations/012_git_credential_reads.ts", import.meta.url), "utf8");
+    const create = /CREATE TABLE git_credentials \([\s\S]*?\n      \)/.exec(m11);
+    const alters = [...m12.matchAll(/ALTER TABLE git_credentials ADD COLUMN [^`]+/g)].map((m) => m[0]);
+    const find = /SELECT \* FROM git_credentials WHERE group_path = \? AND kind = 'ssh_key' AND use_for_reads = 1/.exec(SRC);
+    assert.ok(create, "011's CREATE TABLE was not found");
+    assert.equal(alters.length, 2, "012 should add exactly two columns");
+    assert.ok(find, "readCredentialForGroup's query is gone, or its shape changed");
+
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY)");
+    db.exec(create[0]);
+    // A credential stored before the upgrade, for the merge action.
+    db.prepare("INSERT INTO git_credentials (group_path, name, kind, secret) VALUES ('Notch.fm', 'old', 'ssh_key', 'x')").run();
+    for (const alter of alters) db.exec(alter);
+
+    const reads = (group: string) => db.prepare(find[0]).all(group).map((r: any) => r.name);
+    assert.deepEqual(reads("Notch.fm"), [], "a key that existed before the upgrade is being read with");
+
+    db.prepare("INSERT INTO git_credentials (group_path, name, kind, secret, use_for_reads) VALUES ('FileFreak', 'on', 'ssh_key', 'x', 1)").run();
+    db.prepare("INSERT INTO git_credentials (group_path, name, kind, secret, use_for_reads) VALUES ('FileFreak', 'off', 'ssh_key', 'x', 0)").run();
+    db.prepare("INSERT INTO git_credentials (group_path, name, kind, secret, use_for_reads) VALUES ('FileFreak', 'a token', 'token', 'x', 1)").run();
+    assert.deepEqual(reads("FileFreak"), ["on"]);
+    // The nearest group that has one is found by walking outward, and a
+    // folder inside FileFreak has none of its own.
+    assert.deepEqual(groupAndAncestors("FileFreak/Dev/Infra").map(reads).find((r) => r.length > 0), ["on"]);
+    // Another group's key is not found from here.
+    assert.deepEqual(groupAndAncestors("Notch.fm/Dev").flatMap(reads), []);
+  });
+});
+
+describe("the command git is given", () => {
+  test("ssh is handed this key and no other, whatever its own config says", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ezp-test-"));
+    try {
+      const key = join(dir, "id");
+      writeFile(key, "not a real key\n", { mode: 0o600 });
+      const command = sshCommandFor(key);
+      assert.ok(command.includes(" -F /dev/null "), "without -F /dev/null ssh also offers the key in its own config");
+
+      // `ssh -G` prints the configuration ssh WOULD use and connects to
+      // nothing. It is ssh's own answer, not a reading of the string above.
+      const words = command.split(" ").slice(1).map((w) => w.replace(/^'|'$/g, ""));
+      const said = execFileSync("ssh", [...words, "-G", "git@github.com"], { encoding: "utf8" });
+      const identities = said.split("\n").filter((l) => l.startsWith("identityfile ")).map((l) => l.slice("identityfile ".length));
+      assert.deepEqual(identities, [key], "ssh would offer more than the one key, or a different one");
+      assert.match(said, /^identitiesonly yes$/m);
+      assert.match(said, /^batchmode yes$/m);
+      assert.match(said, /^stricthostkeychecking accept-new$/m);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the copy a step reads with", () => {
+  const KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----";
+
+  test("it holds the key, nobody else can read it, and it is written once", () => {
+    const cred = row(900001, KEY);
+    try {
+      const file = readKeyFile(cred);
+      assert.ok(file, "a key that decrypts should have a file");
+      // With the newline OpenSSH insists on, which the stored form did not have.
+      assert.equal(readFileSync(file, "utf8"), `${KEY}\n`);
+      assert.equal(statSync(file).mode & 0o777, 0o600, "ssh refuses a key that anybody else could read");
+      assert.equal(readKeyFile(cred), file, "the same key should be the same file");
+    } finally {
+      forgetKeyFiles(900001);
+    }
+  });
+
+  test("a replaced secret is a new file, and the old one is gone", () => {
+    const before = readKeyFile(row(900002, KEY));
+    const after = readKeyFile(row(900002, `${KEY}\nchanged`));
+    try {
+      assert.ok(before && after);
+      assert.notEqual(before, after);
+      assert.ok(!existsSync(before), "the old key is still on disk, where a step could read with it");
+      assert.ok(existsSync(after));
+    } finally {
+      forgetKeyFiles(900002);
+    }
+  });
+
+  test("forgetting a credential removes its file and nobody else's", () => {
+    const mine = readKeyFile(row(900003, KEY));
+    // 9000031 starts with the same digits. A prefix match without its
+    // separator would take this one too.
+    const other = readKeyFile(row(9000031, KEY));
+    try {
+      assert.ok(mine && other);
+      forgetKeyFiles(900003);
+      assert.ok(!existsSync(mine), "a deleted credential can still be read with");
+      assert.ok(existsSync(other), "forgetting one credential removed another's key");
+    } finally {
+      forgetKeyFiles(900003);
+      forgetKeyFiles(9000031);
+    }
+  });
+
+  test("a credential that cannot be decrypted has no file, rather than a file of garbage", () => {
+    const broken = { ...row(900004, KEY), secret: "gitcred:v1:AAAA:AAAA:AAAA" };
+    assert.equal(readKeyFile(broken), null);
+  });
+});
