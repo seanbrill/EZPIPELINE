@@ -19,6 +19,11 @@ WORKDIR /app
 # Identical to apps/server/Dockerfile so the layer is shared. npm ci at the
 # repo root installs BOTH workspaces - this is one npm workspaces tree, and
 # installing only apps/client would leave the root package-lock.json unsatisfied.
+# A compiler for native modules (better-sqlite3), for when npm finds no prebuilt binary
+# for this Node and CPU: without it npm ci falls back to node-gyp and fails, as it did when
+# better-sqlite3 13 met a newer node:22 image.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY apps/server/package.json ./apps/server/
 COPY apps/client/package.json ./apps/client/

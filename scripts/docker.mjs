@@ -344,7 +344,12 @@ if (mode === "rebuild" || mode === "reset") {
 }
 
 console.log("\nStarting EZPIPELINE (the first run downloads images and installs packages)...\n");
-run("docker", [...compose, "up", "-d", "--build"]);
+// --renew-anon-volumes: node_modules lives in anonymous volumes (docker-compose.yml), and
+// Compose otherwise carries them over from the old containers. A package added since, such
+// as v2's fonts, would then be missing however often the image is rebuilt. Fresh ones are
+// filled from the image. The named ezpipeline_data volume (the database and pipelines) is
+// never touched by this.
+run("docker", [...compose, "up", "-d", "--build", "--renew-anon-volumes"]);
 
 console.log(
   `\nRunning.\n` +

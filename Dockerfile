@@ -33,6 +33,11 @@ FROM node:22-bookworm-slim AS base
 FROM base AS builder
 WORKDIR /app
 
+# A compiler for native modules (better-sqlite3), for when npm finds no prebuilt binary
+# for this Node and CPU: without it npm ci falls back to node-gyp and fails, as it did when
+# better-sqlite3 13 met a newer node:22 image.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY apps/client/package.json ./apps/client/
 COPY apps/server/package.json ./apps/server/
