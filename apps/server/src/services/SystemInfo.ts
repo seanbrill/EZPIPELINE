@@ -5,6 +5,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { DATA_DIR, DB_PATH, LOGS_DIR } from "../config/index.js";
 import { DatabaseService } from "./Database.js";
+import { runningVersion } from "./version.js";
 
 const execFileAsync = promisify(execFile);
 const STARTED_AT = new Date();
@@ -65,7 +66,7 @@ export async function systemHealth() {
     disk = { total: s.blocks * s.bsize, free: s.bavail * s.bsize };
   } catch { /* not supported here */ }
   return {
-    version: process.env.EZP_VERSION ?? process.env.npm_package_version ?? "unknown",
+    version: runningVersion(),
     node: process.version,
     startedAt: STARTED_AT.toISOString(),
     uptimeSeconds: Math.round(process.uptime()),

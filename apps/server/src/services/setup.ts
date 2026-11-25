@@ -9,6 +9,7 @@
 import { execFile } from "child_process";
 import os from "os";
 import { DatabaseService } from "./Database.js";
+import { runningVersion } from "./version.js";
 import { SettingsService } from "./SettingsService.js";
 
 export type Theme = "classic" | "midnight" | "light";
@@ -85,7 +86,7 @@ export function writeSetup(patch: Record<string, unknown>, { fresh = false } = {
 export function publicInstance() {
   const s = readSetup();
   // app and version let the desktop app's Connect screen tell an EZPipeline from any other page.
-  return { app: "ezpipeline", name: s.instance.name, theme: s.instance.theme, version: process.env.EZP_VERSION ?? process.env.npm_package_version ?? null };
+  return { app: "ezpipeline", name: s.instance.name, theme: s.instance.theme, version: runningVersion() };
 }
 
 let dockerCache: { at: number; value: string | null } | null = null;

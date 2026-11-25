@@ -31,7 +31,8 @@ import { readSetup, safeName } from "./setup.js";
 import { readZip, writeZip, type ZipEntry } from "./zip.js";
 
 export const FORMAT = "ezp/1";
-export const APP_VERSION = "2.0.0";
+import { APP_VERSION } from "./version.js";
+export { APP_VERSION };
 export const EXPORTS_DIR = () => path.join(DATA_DIR, "exports");
 export const IMPORTS_DIR = () => path.join(DATA_DIR, "imports");
 const KEEP_MS = 7 * 864e5;

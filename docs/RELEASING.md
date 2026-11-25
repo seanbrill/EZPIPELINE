@@ -19,7 +19,8 @@ installed apps both read that folder.
 
 There is one version, in the root `package.json`. The desktop app, its installers'
 names (`ezpipeline-<version>-<mac|win|linux>-<arch>.<ext>`) and the release folder's
-`v<version>` all use it. Raise it before a release.
+`v<version>` all use it. Raise it before a release, together with `APP_VERSION` in
+`apps/server/src/services/version.ts` (the server's tests fail while the two differ).
 
 ## Releasing with the pipeline
 
