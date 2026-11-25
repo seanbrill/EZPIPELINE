@@ -6,9 +6,14 @@ import { LOGS_DIR } from "../config/index.js";
 
 const logDir = LOGS_DIR;
 
-// Create Winston Logger
+// LOG_LEVEL filters the console and app.log only: build output still streams
+// to the people watching the run whatever it is set to.
+const LEVELS = ["error", "warn", "info", "debug"];
+const wanted = (process.env.LOG_LEVEL ?? "").trim().toLowerCase();
+const level = LEVELS.includes(wanted) ? wanted : "info";
+
 const winstonLogger = winston.createLogger({
-  level: "info",
+  level,
   format: winston.format.combine(
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.printf(({ timestamp, level, message }) => {
@@ -51,9 +56,27 @@ class Redactor {
   }
 }
 
+/** What a stream client is shown. `build` is null for the server's own log. */
+export interface StreamScope {
+  build: { buildId: string; pipelineId: string } | null;
+}
+type StreamFilter = (scope: StreamScope) => boolean;
+
+/** One line a step printed, as the stream and the database carry it. */
+export interface BuildLine {
+  buildId: string;
+  pipelineId: string;
+  stepIndex: number | null;
+  /** The substep path the line belongs to ("11.2.1"), or null for the step itself. */
+  substep?: string | null;
+  stream: "stdout" | "stderr" | "system";
+  level: "info" | "warn" | "error";
+  text: string;
+}
+
 export default class Logger {
   private static instance: Logger;
-  private clients: Response[] = [];
+  private clients: { res: Response; filter: StreamFilter }[] = [];
   private redactor = new Redactor();
 
   private constructor() { }
@@ -80,43 +103,58 @@ export default class Logger {
   public info(message: string) {
     const safeMsg = this.redactor.redact(message);
     winstonLogger.info(safeMsg);
-    this.broadcastLog("info", safeMsg);
+    this.broadcastLog("info", safeMsg, null);
   }
 
   public warn(message: string) {
     const safeMsg = this.redactor.redact(message);
     winstonLogger.warn(safeMsg);
-    this.broadcastLog("warn", safeMsg);
+    this.broadcastLog("warn", safeMsg, null);
   }
 
   public error(message: string, error?: any) {
     const msg = `${message} ${error ? "- " + error.toString() : ""}`;
     const safeMsg = this.redactor.redact(msg);
     winstonLogger.error(safeMsg);
-    this.broadcastLog("error", safeMsg);
+    this.broadcastLog("error", safeMsg, null);
   }
 
-  private broadcastLog(level: string, message: string) {
-    // Message is already redacted by caller
-    // Format matches what winston outputs for consistency in UI if we parse it
+  /**
+   * A line from a build. Goes to the server log and ONLY to stream clients
+   * allowed to see that pipeline. It used to go through info(), which sent
+   * every build's output to every signed-in user, whatever they could view.
+   * `text` must already be redacted.
+   */
+  public buildLine(line: BuildLine) {
+    winstonLogger.log(line.level, line.text);
+    this.broadcastLog(line.level, line.text, line);
+  }
+
+  private broadcastLog(level: string, message: string, line: BuildLine | null) {
     const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
-    const formattedDate = timestamp;
-
-    // Send object for React to parse
+    // `message` keeps the v1 shape ("[ts] [LEVEL]: text") for the old
+    // dashboard; v2 reads `text` and the build fields.
     const entry = {
-      timestamp: formattedDate,
+      type: 'log',
+      timestamp,
       level,
-      message: `[${formattedDate}] [${level.toUpperCase()}]: ${message}`
+      message: `[${timestamp}] [${level.toUpperCase()}]: ${message}`,
+      text: message,
+      ...(line ? { buildId: line.buildId, pipelineId: line.pipelineId, stepIndex: line.stepIndex, substep: line.substep ?? null, stream: line.stream } : {}),
     };
-
     const data = `data: ${JSON.stringify(entry)}\n\n`;
-    this.clients.forEach(client => client.write(data));
+    const scope: StreamScope = { build: line ? { buildId: line.buildId, pipelineId: line.pipelineId } : null };
+    for (const c of this.clients) {
+      if (c.filter(scope)) c.res.write(data);
+    }
   }
 
-  public addClient(res: Response) {
-    this.clients.push(res);
+  /** `filter` decides, per line, whether this client sees it. */
+  public addClient(res: Response, filter: StreamFilter) {
+    const client = { res, filter };
+    this.clients.push(client);
     res.on("close", () => {
-      this.clients = this.clients.filter(client => client !== res);
+      this.clients = this.clients.filter(c => c !== client);
     });
   }
 }

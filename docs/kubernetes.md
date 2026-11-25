@@ -1,75 +1,61 @@
 # Kubernetes
 
 Two separate things live on this page. The first is what EZPIPELINE's
-`kubernetes:` block actually does, which is less than it sounds. The second is
-a cheat sheet of `az` and `kubectl` commands for working with an AKS cluster
-by hand, which is what most people came here for.
+`kubernetes:` block does. The second is a cheat sheet of `az` and `kubectl`
+commands for working with an AKS cluster by hand.
 
 ---
 
 ## What EZPIPELINE does with `kubernetes:`
 
-Add the block to a pipeline's YAML and it runs **after the last step**:
+The block becomes the pipeline's **last step**, named "Deploy to Kubernetes".
+It runs like any other step: its output is in the run's log, it has a row in
+the run's timeline, and if a command fails, the run fails.
 
 ```yaml
 kubernetes:
-  namespace: production
   context: my-aks-cluster
+  namespace: production
   deploymentFile: k8s/deployment.yaml
   serviceFile: k8s/service.yaml
+  rollout: deployment/my-app
+  timeout: 5m
 ```
 
-The whole implementation is `deployToKubernetes()` in
-`apps/server/src/controllers/EZPipelineController.ts`, and it is short enough
-to describe exactly:
+That block runs, in the pipeline's workspace:
 
-1. If `context` is set, run `kubectl config use-context <context>`.
-2. Run `kubectl apply -f <deploymentFile>`.
-3. If `serviceFile` is set, run `kubectl apply -f <serviceFile>`.
-4. Catch any error, log it, and carry on.
+```bash
+kubectl --context 'my-aks-cluster' --namespace 'production' apply -f 'k8s/deployment.yaml' &&
+  kubectl --context 'my-aks-cluster' --namespace 'production' apply -f 'k8s/service.yaml' &&
+  kubectl --context 'my-aks-cluster' --namespace 'production' rollout status 'deployment/my-app' --timeout=5m
+```
+
+The context is passed to each command, never switched with
+`kubectl config use-context`, so a deploy cannot change which cluster
+anything else on the machine talks to.
 
 ### The fields
 
 | Field | Required | What it does |
 |---|---|---|
-| `namespace` | yes | **Logged only.** It is not passed to `kubectl` as `-n` |
-| `deploymentFile` | yes | `kubectl apply -f` |
-| `context` | no | `kubectl config use-context` first |
+| `deploymentFile` | yes | `kubectl apply -f`, relative to the workspace |
 | `serviceFile` | no | A second `kubectl apply -f` |
-| `imagePullSecret` | no | Declared in the type. Not used |
-| `valuesFile` | no | Declared in the type. Not used |
-| `helmChart` | no | Declared in the type. Not used |
+| `context` | no | Passed as `--context` |
+| `namespace` | no | Passed as `--namespace`. Without it, the manifests' own `metadata.namespace`, or the context's default |
+| `rollout` | no | One resource or a list (`deployment/my-app`). Each is waited for with `kubectl rollout status`; the step fails if one does not become ready |
+| `timeout` | no | How long each rollout may take: `5m` (the default), `90s`, `1h` |
+| `enabled` | no | `false` keeps the block in the file without deploying |
 
-`namespace` deserves the emphasis. It is written to the build log and never
-reaches `kubectl`, so your manifests must carry their own
-`metadata.namespace` or the apply lands in whatever namespace the current
-context defaults to.
+Without `rollout`, the step passes as soon as the cluster accepts the
+manifests, whether or not a pod ever starts. Name the deployments you care
+about.
 
-### Three things it does not do
+The editor flags any other field in the block (`helmChart`, `valuesFile`,
+`imagePullSecret`) as one that does nothing. For Helm, run it in a step.
 
-Earlier documentation said it did all three.
+### Doing it in steps instead
 
-**There is no `enabled` flag.** The presence of the `kubernetes` key is the
-trigger. Setting `enabled: false` does nothing; the field is not read and the
-deploy runs anyway. To turn it off, remove the block.
-
-**It does not wait for rollout.** `kubectl apply` returns as soon as the API
-server accepts the manifest. The build is marked successful at that moment,
-whether or not a single pod ever became ready.
-
-**It does not fail the build.** Every error is caught and turned into a log
-line. A `kubectl` that is missing, unauthenticated or pointed at a dead
-cluster produces a green build and a message in
-`apps/server/logs/app.log`.
-
-Fields named `deploymentName`, `imageName`, `imageTag` and `configPath` have
-never existed.
-
-### What to do instead
-
-Treat the block as a convenience for the apply, and put anything you want the
-build to depend on into ordinary steps, where a non-zero exit fails the
-pipeline:
+The block is a shorthand. Anything more involved belongs in ordinary steps:
 
 ```yaml
 steps:
@@ -79,17 +65,10 @@ steps:
       docker build -t ${REGISTRY}/my-app:${TAG} .
       docker push ${REGISTRY}/my-app:${TAG}
 
-  - name: Apply manifests
+  - name: Deploy
     shell: /bin/bash
-    run: kubectl apply -n production -f k8s/
-
-  - name: Wait for rollout
-    shell: /bin/bash
-    run: kubectl rollout status deployment/my-app -n production --timeout=5m
+    run: helm upgrade --install my-app ./chart -n production --wait --timeout 5m
 ```
-
-That version fails when the deploy fails, applies into the namespace you named,
-and needs no `kubernetes:` block at all.
 
 ### Making kubectl available
 

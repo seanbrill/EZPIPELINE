@@ -1,68 +1,69 @@
-
-import React from 'react';
-import { AlertTriangle, Check, X } from 'lucide-react';
+/**
+ * The dialog behind `confirm()` (design sheet f48, f61), built on the shared
+ * Modal: S width, Cancel focused first when it is destructive, solid rose for
+ * the button that cannot be undone.
+ *
+ * `requireText`: the person types this (a pipeline's name) before the
+ * destructive button wakes up. For losses that cannot be undone and are easy
+ * to aim at the wrong row.
+ */
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { AlertTriangle, HelpCircle } from 'lucide-react';
+import { Modal } from '../ui/Modal';
+import { Button } from '../ui/Button';
+import { Field, Input } from '../ui/Field';
 
 interface ConfirmationModalProps {
-    isOpen: boolean;
-    title: string;
-    message: string;
-    confirmText?: string;
-    cancelText?: string;
-    isDangerous?: boolean;
-    onConfirm: () => void;
-    onCancel: () => void;
+  isOpen: boolean;
+  title: ReactNode;
+  message: ReactNode;
+  confirmText?: string;
+  cancelText?: string;
+  isDangerous?: boolean;
+  requireText?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
 }
 
-const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
-    isOpen,
-    title,
-    message,
-    confirmText = "Confirm",
-    cancelText = "Cancel",
-    isDangerous = false,
-    onConfirm,
-    onCancel
-}) => {
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-[#1e1e1e] border border-slate-700/50 rounded-xl shadow-2xl max-w-md w-full overflow-hidden transform transition-all scale-100 animate-in zoom-in-95 duration-200">
-                {/* Header */}
-                <div className="p-6 pb-0 flex items-start gap-4">
-                    <div className={`p-3 rounded-full flex-shrink-0 ${isDangerous ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>
-                        <AlertTriangle className="w-6 h-6" />
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
-                        <p className="text-slate-400 text-sm leading-relaxed">
-                            {message}
-                        </p>
-                    </div>
-                </div>
-
-                {/* Actions */}
-                <div className="p-6 flex items-center justify-end gap-3 mt-2">
-                    <button
-                        onClick={onCancel}
-                        className="px-4 py-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-sm font-medium"
-                    >
-                        {cancelText}
-                    </button>
-                    <button
-                        onClick={onConfirm}
-                        className={`px-4 py-2 rounded-lg text-white text-sm font-bold shadow-lg transition-all flex items-center gap-2 ${isDangerous
-                                ? 'bg-red-600 hover:bg-red-500 shadow-red-900/20'
-                                : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/20'
-                            }`}
-                    >
-                        {isDangerous ? <X className="w-4 h-4" /> : <Check className="w-4 h-4" />}
-                        {confirmText}
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-export default ConfirmationModal;
+export default function ConfirmationModal({
+  isOpen, title, message, confirmText = 'Confirm', cancelText = 'Cancel', isDangerous, requireText, onConfirm, onCancel,
+}: ConfirmationModalProps) {
+  const [typed, setTyped] = useState('');
+  // Clear what was typed each time the dialog opens (set during render, not in an effect).
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) setTyped('');
+  }
+  const ready = !requireText || typed.trim() === requireText;
+  return (
+    <Modal
+      open={isOpen}
+      onClose={onCancel}
+      size="sm"
+      title={title}
+      icon={isDangerous ? <AlertTriangle /> : <HelpCircle />}
+      iconTone={isDangerous ? 'fail' : 'neutral'}
+      dirty={typed.length > 0}
+      onSubmit={() => ready && onConfirm()}
+      footer={
+        <>
+          <Button variant="ghost" data-cancel={isDangerous ? '' : undefined} data-autofocus={isDangerous && !requireText ? '' : undefined} onClick={onCancel}>
+            {cancelText}
+          </Button>
+          <Button variant={isDangerous ? 'danger-solid' : 'primary'} disabled={!ready} onClick={onConfirm} data-autofocus={!isDangerous ? '' : undefined}>
+            {confirmText}
+          </Button>
+        </>
+      }
+    >
+      <div className="text-[14px] leading-relaxed text-fg-2 [text-wrap:pretty]">{message}</div>
+      {requireText && (
+        <Field className="mt-4" label={<>Type <span className="font-mono text-fg">{requireText}</span> to confirm</>}>
+          <Input mono value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
+        </Field>
+      )}
+    </Modal>
+  );
+}

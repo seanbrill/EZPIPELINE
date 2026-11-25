@@ -1,0 +1,188 @@
+/* ── EZPIPELINE v2 DESIGN TOKENS ──────────────────────────────────────────────
+ *
+ * One palette, three themes, and every colour in the app comes from here.
+ * The design sheet is the source: knitted project "EZPipeline", sheet
+ * "v2 — EZPipeline reimagined", frames f1 (colour) and f2 (type, spacing,
+ * elevation).
+ *
+ * TWO LAYERS, ON PURPOSE.
+ *   1. Raw variables (--bg, --surface, --fg-2 …) are set per theme on <html
+ *      data-theme>. A theme is nothing more than a different set of these.
+ *   2. `@theme inline` in index.css maps them to Tailwind names, so code says
+ *      `bg-surface text-fg-2 border-line` and never `bg-slate-800`. "inline"
+ *      makes each utility read the raw variable directly, which is what lets
+ *      the theme switch at runtime without rebuilding anything.
+ *
+ * SEMANTIC NAMES ONLY. `run` is the colour of something running, not "sky";
+ * `fail` is a failure, not "rose". If a component needs a colour that has no
+ * meaning here, the component is wrong, not the palette.
+ *
+ * The old names (--color-bg, --color-text, --color-text-muted …) stay as
+ * aliases at the bottom until the last v1 screen is gone.
+ */
+
+:root,
+[data-theme="classic"] {
+  color-scheme: dark;
+
+  --bg: #09090b;
+  --bg-2: #0c0c0f;
+  --surface: #121215;
+  --surface-2: #18181c;
+  --surface-3: #202025;
+  --line: #232328;
+  --line-2: #2e2e35;
+  --line-3: #3f3f46;
+
+  --fg: #f4f4f5;
+  --fg-2: #a1a1aa;
+  --fg-3: #71717a;
+
+  --primary: #10b981;
+  --primary-hi: #34d399;
+  --primary-ink: #022c22;
+  --primary-soft: rgba(16, 185, 129, 0.12);
+  --primary-line: rgba(16, 185, 129, 0.38);
+
+  --run: #38bdf8;
+  --run-soft: rgba(56, 189, 248, 0.12);
+  --run-line: rgba(56, 189, 248, 0.35);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.12);
+  --warn-line: rgba(251, 191, 36, 0.35);
+  --fail: #fb7185;
+  --fail-soft: rgba(251, 113, 133, 0.12);
+  --fail-line: rgba(251, 113, 133, 0.35);
+  --fail-solid: #e11d48;
+  --auto: #a78bfa;
+  --auto-soft: rgba(167, 139, 250, 0.12);
+  --auto-line: rgba(167, 139, 250, 0.35);
+
+  --log-bg: #060608;
+  --log-fg: #d4d4d8;
+  --scrim: rgba(5, 5, 7, 0.72);
+
+  --sh-1: 0 1px 0 rgba(255, 255, 255, 0.035) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+  --sh-2: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  --sh-3: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 24px 64px -12px rgba(0, 0, 0, 0.75);
+  --glow: 0 0 0 1px var(--primary-line), 0 8px 32px -6px rgba(16, 185, 129, 0.35);
+}
+
+/* Midnight: the same meanings on a navy ground. Emerald stays the action
+ * colour in every theme, so "the green button does the thing" holds whichever
+ * theme somebody picked. */
+[data-theme="midnight"] {
+  color-scheme: dark;
+
+  --bg: #070b16;
+  --bg-2: #0a1020;
+  --surface: #0f1729;
+  --surface-2: #142036;
+  --surface-3: #1b2943;
+  --line: #1e2a44;
+  --line-2: #2a3856;
+  --line-3: #3b4b6b;
+
+  --fg: #e8edf7;
+  --fg-2: #9aa7bf;
+  --fg-3: #6b7a96;
+
+  --log-bg: #050912;
+  --log-fg: #d5dceb;
+  --scrim: rgba(3, 6, 14, 0.74);
+}
+
+/* Light: every status colour moves a step darker so it keeps AA contrast on
+ * white, and the primary ink flips to white for the same reason. */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #fafafa;
+  --bg-2: #f4f4f5;
+  --surface: #ffffff;
+  --surface-2: #f6f6f7;
+  --surface-3: #ececee;
+  --line: #e4e4e7;
+  --line-2: #d4d4d8;
+  --line-3: #a1a1aa;
+
+  --fg: #09090b;
+  --fg-2: #52525b;
+  --fg-3: #71717a;
+
+  --primary: #059669;
+  --primary-hi: #047857;
+  --primary-ink: #ffffff;
+  --primary-soft: rgba(5, 150, 105, 0.1);
+  --primary-line: rgba(5, 150, 105, 0.35);
+
+  --run: #0284c7;
+  --run-soft: rgba(2, 132, 199, 0.1);
+  --run-line: rgba(2, 132, 199, 0.32);
+  --warn: #b45309;
+  --warn-soft: rgba(217, 119, 6, 0.12);
+  --warn-line: rgba(217, 119, 6, 0.35);
+  --fail: #e11d48;
+  --fail-soft: rgba(225, 29, 72, 0.08);
+  --fail-line: rgba(225, 29, 72, 0.3);
+  --fail-solid: #e11d48;
+  --auto: #7c3aed;
+  --auto-soft: rgba(124, 58, 237, 0.1);
+  --auto-line: rgba(124, 58, 237, 0.3);
+
+  --log-bg: #0c0c0f;
+  --log-fg: #d4d4d8;
+  --scrim: rgba(24, 24, 27, 0.4);
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --sh-2: 0 12px 32px -8px rgba(0, 0, 0, 0.16);
+  --sh-3: 0 24px 64px -12px rgba(0, 0, 0, 0.25);
+  --glow: 0 0 0 1px var(--primary-line), 0 8px 24px -8px rgba(5, 150, 105, 0.35);
+}
+
+/* ── MOTION (f110) ────────────────────────────────────────────────────────────
+ * Durations are named by what moves, so a modal and a toast cannot drift
+ * apart by somebody picking 180ms in one place and 200ms in another. */
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --dur-press: 90ms;
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-zoom: 220ms;
+  --dur-slow: 320ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-zoom: 0ms;
+    --dur-slow: 0ms;
+  }
+}
+
+/* ── v1 ALIASES ──────────────────────────────────────────────────────────────
+ * Read by the screens that have not been rebuilt yet. Delete with them. */
+:root,
+[data-theme] {
+  --color-text: var(--fg);
+  --color-text-muted: var(--fg-2);
+  --color-accent: var(--primary-hi);
+}
+
+/* Settings › Appearance › Reduce motion: the same as the system setting. */
+:root[data-motion="reduce"] {
+  --dur-press: 0ms;
+  --dur-fast: 0ms;
+  --dur-base: 0ms;
+  --dur-zoom: 0ms;
+  --dur-slow: 0ms;
+}
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}

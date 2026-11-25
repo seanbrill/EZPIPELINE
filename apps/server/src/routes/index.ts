@@ -1,9 +1,16 @@
+import { parseDocument } from "yaml";
+import { loginLimiter } from "../services/loginLimiter.js";
+import { checkPipelineYaml } from "../services/substeps.js";
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import path from "path";
 import * as fs from "fs";
 import crypto from "crypto";
-import EZPipelineController from "../controllers/EZPipelineController.js";
+import EZPipelineController, { ApprovalError } from "../controllers/EZPipelineController.js";
+import { canOnPipeline, pathAccess } from "../services/access.js";
+import { AuditService } from "../services/AuditService.js";
+import { systemHealth } from "../services/SystemInfo.js";
+import { CommitService, pendingFrom } from "../services/CommitService.js";
 import Logger from "../controllers/Logger.js";
 import { runActionChain } from "../services/ActionRunner.js";
 import { ProvenanceService } from "../services/ProvenanceService.js";
@@ -26,12 +33,45 @@ import { MailService, PROVIDERS, providerById } from "../services/mail/index.js"
 import { SettingsService } from "../services/SettingsService.js";
 import globalEnvRouter from "./globalEnv.js";
 import groupEnvRouter from "./groupEnv.js";
+import layersRouter from "./layers.js";
+import pipelineAdminRouter from "./pipelineAdmin.js";
 import gitCredentialsRouter from "./gitCredentials.js";
+import setupRouter from "./setup.js";
+import meRouter from "./me.js";
+import bundleRouter from "./bundle.js";
+import desktopRouter from "./desktop.js";
+import selfhostRouter from "./selfhost.js";
+import { safeName, TEMPLATES, writeSetup } from "../services/setup.js";
 import { DATA_DIR, PORT, PUBLIC_DIR, EMAIL_CONFIG, PIPELINES_DIR, AUTH_CONFIG } from "../config/index.js";
 
 // ... (existing imports)
 
 const router = Router();
+
+/**
+ * Route guard: the signed-in user needs `perm` on the pipeline named by
+ * `req.params[param]` (an id or a display name).
+ */
+function requirePipeline(perm: PermissionType, param = "targetName") {
+    return (req: Request, res: Response, next: NextFunction) => {
+        const user = (req as any).user;
+        const target = String(req.params[param] ?? "");
+        if (!target || !canOnPipeline(Number(user.id), target, perm)) {
+            res.status(403).json({ error: `You need "${perm}" on ${target || "this pipeline"}.` });
+            return;
+        }
+        next();
+    };
+}
+
+/** Admin only, decided from the database rather than the token's claims. */
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+    if (!permissionsService.isAdmin(Number((req as any).user?.id))) {
+        res.status(403).json({ error: "Only an admin can do this." });
+        return;
+    }
+    next();
+}
 const configController = ConfigController.getInstance();
 const permissionsService = PermissionsService.getInstance();
 const buildService = BuildService.getInstance();
@@ -48,6 +88,8 @@ const globalUpload = multer({ dest: path.join(DATA_DIR, 'tmp_uploads') });
 
 // Mount global env routes
 router.use("/global-env", authenticateToken, globalEnvRouter);
+router.use(layersRouter); // each of its routes authenticates itself
+router.use(pipelineAdminRouter); // so does this one
 router.use("/group-env", authenticateToken, groupEnvRouter);
 // Beside group-env deliberately: same scope, same permission, and the
 // argument for scoping an environment variable to a group is stronger
@@ -71,21 +113,8 @@ router.get("/builds/history", authenticateToken, (req, res) => {
         permissionsService.checkAccess(user.id, h.pipelineId, 'read') ||
         (h.pipelineName && permissionsService.checkAccess(user.id, h.pipelineName, 'read'))
     );
-    res.json({ history: allowed });
-});
-
-// Clear Build History (Admin Only)
-router.delete("/builds/history", authenticateToken, (req, res) => {
-    const { group } = req.query;
-    const user = (req as any).user;
-
-    if (!user.isAdmin) {
-        res.status(403).json({ error: "Only admins can clear bulk history" });
-        return;
-    }
-
-    EZPipelineController.instance.clearBuildHistory(group as string | undefined);
-    res.json({ message: "History cleared" });
+    const summary = buildService.substepSummary(allowed.map((h: any) => h.id));
+    res.json({ history: allowed.map((h: any) => (summary.has(h.id) ? { ...h, substeps: summary.get(h.id) } : h)) });
 });
 
 // History Routes (Pipeline Specific)
@@ -179,8 +208,25 @@ router.get("/builds/:id/logs", authenticateToken, (req, res) => {
         return;
     }
     const logs = buildService.getBuildLogs(id);
-    const messages = logs.map((l: any) => l.message);
-    res.json({ logs: messages });
+    // `logs` stays a list of strings for the v1 dashboard; `lines` carries the
+    // step each line came from, for the v2 run page.
+    res.json({
+        logs: logs.map((l: any) => l.message),
+        lines: logs.map((l: any) => ({ id: l.id, text: l.message, at: l.timestamp, stepIndex: l.stepIndex ?? null, stream: l.stream ?? null, substep: l.substep ?? null, level: l.level ?? 'info' })),
+    });
+});
+
+// The substep tree of a run (services/substeps.ts), for the run page's zoom.
+router.get("/builds/:id/substeps", authenticateToken, (req, res) => {
+    const id = String(req.params.id);
+    const user = (req as any).user;
+    const build = buildService.getBuild(id);
+    if (!build) { res.status(404).json({ error: "No such build." }); return; }
+    if (!permissionsService.checkPermission(user.id, build.target, 'view')) {
+        res.status(403).json({ error: "You do not have permission to read that build." });
+        return;
+    }
+    res.json({ substeps: buildService.getSubsteps(id) });
 });
 
 // Schedule Routes
@@ -192,7 +238,9 @@ router.get("/builds/:id/logs", authenticateToken, (req, res) => {
 router.get("/git-watches", authenticateToken, (req, res) => {
     try {
         const db = DatabaseService.getInstance().getDb();
-        const watches = db.prepare(`SELECT * FROM git_watches ORDER BY id DESC`).all();
+        const user = (req as any).user;
+        const watches = (db.prepare(`SELECT * FROM git_watches ORDER BY id DESC`).all() as any[])
+            .filter((w) => canOnPipeline(Number(user.id), w.pipeline_target, 'view'));
         res.json({ watches });
     } catch (e) {
         Logger.getInstance().error(`Failed to list git watches: ${e}`);
@@ -222,6 +270,10 @@ router.post("/git-watches", authenticateToken, (req, res) => {
 
     if (!pipelineTarget || !repoUrl) {
         res.status(400).json({ error: "pipelineTarget and repoUrl are required" });
+        return;
+    }
+    if (!canOnPipeline(Number(user.id), String(pipelineTarget), 'editYaml')) {
+        res.status(403).json({ error: `You need "editYaml" on ${pipelineTarget} to watch a repository for it.` });
         return;
     }
     // The floor is not politeness to the forge, it is this server: every watch
@@ -255,7 +307,19 @@ router.post("/git-watches", authenticateToken, (req, res) => {
     }
 });
 
-router.patch("/git-watches/:id", authenticateToken, (req, res) => {
+/** A watch may be changed by whoever may edit its pipeline. */
+function mayEditWatch(req: Request, res: Response, next: NextFunction) {
+    const w = DatabaseService.getInstance().getDb()
+        .prepare(`SELECT pipeline_target FROM git_watches WHERE id = ?`).get(req.params.id) as { pipeline_target: string } | undefined;
+    if (!w) { res.status(404).json({ error: "No such watch." }); return; }
+    if (!canOnPipeline(Number((req as any).user.id), w.pipeline_target, 'editYaml')) {
+        res.status(403).json({ error: `You need "editYaml" on ${w.pipeline_target}.` });
+        return;
+    }
+    next();
+}
+
+router.patch("/git-watches/:id", authenticateToken, mayEditWatch, (req, res) => {
     const { enabled, autoApprove, pollSeconds, branch } = req.body ?? {};
     try {
         const db = DatabaseService.getInstance().getDb();
@@ -281,7 +345,7 @@ router.patch("/git-watches/:id", authenticateToken, (req, res) => {
     }
 });
 
-router.delete("/git-watches/:id", authenticateToken, (req, res) => {
+router.delete("/git-watches/:id", authenticateToken, mayEditWatch, (req, res) => {
     try {
         const db = DatabaseService.getInstance().getDb();
         db.prepare(`DELETE FROM git_watches WHERE id = ?`).run(req.params.id);
@@ -292,49 +356,20 @@ router.delete("/git-watches/:id", authenticateToken, (req, res) => {
     }
 });
 
-router.get("/schedules/:target", authenticateToken, (req, res) => {
-    const { target } = req.params;
-    const s = scheduler.getSchedulesForPipeline(target);
-    res.json({ schedules: s });
-});
+// Email codes: from the CSPRNG, compared in constant time, five tries each.
+const MAX_CODE_TRIES = 5;
+const codeTries = new Map<number, number>();
+const newCode = () => String(crypto.randomInt(100000, 1000000));
+const sameCode = (a: unknown, b: unknown) => {
+    const x = Buffer.from(String(a ?? "")), y = Buffer.from(String(b ?? ""));
+    return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
 
-router.post("/schedules", authenticateToken, (req, res) => {
-    const { pipelineTarget, cronExpression } = req.body;
-    const user = (req as any).user;
-    if (!permissionsService.checkAccess(user.id, pipelineTarget, 'write')) {
-        res.status(403).json({ error: "Access denied" });
-        return;
-    }
-    try {
-        const id = scheduler.addSchedule(pipelineTarget, cronExpression, user.id);
-        res.json({ id });
-    } catch (e: any) {
-        res.status(400).json({ error: e.message });
-    }
-});
-
-router.delete("/schedules/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        scheduler.removeSchedule(Number(id));
-        res.json({ message: "Schedule removed" });
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-router.patch("/schedules/:id/toggle", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { enabled } = req.body;
-    try {
-        scheduler.toggleSchedule(Number(id), enabled);
-        res.json({ message: "Schedule updated" });
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-
+router.use(setupRouter);
+router.use(bundleRouter);
+router.use(desktopRouter);
+router.use(selfhostRouter);
+router.use(meRouter);
 
 router.get("/setup-status", (req, res) => {
     if (!AUTH_CONFIG.required) {
@@ -346,9 +381,28 @@ router.get("/setup-status", (req, res) => {
 });
 
 router.post("/setup", (req, res) => {
-    const { username, password, email } = req.body;
+    // An instance the self-host wizard deployed is public before anyone is on it. Its
+    // first people arrive from the instance that deployed it (POST /selfhost/receive),
+    // so the open "create the first admin" door stays shut here.
+    if (process.env.EZP_SETUP_TOKEN) {
+        res.status(403).json({ error: "set_up_by_deploy", message: "This instance is set up by the deploy that made it. Its admin arrives with the move; finish the deploy from the instance that started it." });
+        return;
+    }
+    const { username, password, email, displayName, mfa } = req.body ?? {};
     if (!username || !password) {
         res.status(400).json({ error: "Username and password required" });
+        return;
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,39}$/.test(String(username))) {
+        res.status(400).json({ error: "A username is 2 to 40 letters, digits, dots, dashes or underscores." });
+        return;
+    }
+    if (String(password).length < 12) {
+        res.status(400).json({ error: "Use at least 12 characters. This account can run code on the host." });
+        return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+        res.status(400).json({ error: "That email does not look right." });
         return;
     }
 
@@ -365,8 +419,10 @@ router.post("/setup", (req, res) => {
         // Check if this is the first user (redundant with hasUsers() check above but safe)
         // Actually hasUsers() checked count > 0. If we are here, count is 0. So this is the first user -> Admin.
 
-        const insert = db.prepare("INSERT INTO users (username, password, email, mfa_enabled, is_admin, is_primary_admin, display_name) VALUES (?, ?, ?, 0, 1, 1, ?)");
-        insert.run(username, hashedPassword, email || null, username);
+        const name = String(displayName ?? "").trim().slice(0, 60) || username;
+        const insert = db.prepare("INSERT INTO users (username, password, email, mfa_enabled, is_admin, is_primary_admin, display_name) VALUES (?, ?, ?, ?, 1, 1, ?)");
+        insert.run(username, hashedPassword, email || null, mfa && email ? 1 : 0, name);
+        writeSetup({ step: 3 }, { fresh: true });
 
         // Auto-login after setup
         const stmt = db.prepare("SELECT * FROM users WHERE username = ?");
@@ -380,7 +436,7 @@ router.post("/setup", (req, res) => {
             displayName: user.display_name
         }, SECRET, { expiresIn: '24h' });
 
-        Logger.getInstance().info(`First user '${username}' created as Admin with MFA enabled.`);
+        Logger.getInstance().info(`First user '${username}' created as the primary admin${mfa && email ? ", with email codes on" : ""}.`);
         res.json({ token, username: user.username, isAdmin: true });
     } catch (e: any) {
         Logger.getInstance().error("Setup failed", e);
@@ -408,17 +464,35 @@ router.get("/auth/config", (req, res) => {
     });
 });
 
+let dummyHash: string | null = null;
+const noAccountHash = () => (dummyHash ??= bcrypt.hashSync("no account has this password", 10));
+
 router.post("/login", async (req, res) => {
-    const { username, password, deviceToken } = req.body;
+    const { username, password, deviceToken, remember } = req.body ?? {};
+    const life = remember ? '30d' : '24h';
     try {
         const db = DatabaseService.getInstance().getDb();
-        const stmt = db.prepare("SELECT * FROM users WHERE username = ?");
-        const user = stmt.get(username) as any;
+        // A username, or the email on the account.
+        const who = String(username ?? "").trim();
+        const user = (db.prepare("SELECT * FROM users WHERE username = ?").get(who)
+            ?? (who.includes("@") ? db.prepare("SELECT * FROM users WHERE lower(email) = lower(?)").get(who) : undefined)) as any;
 
-        if (!user || !bcrypt.compareSync(password, user.password)) {
+        const address = req.ip ?? "unknown";
+        const wait = loginLimiter.wait(who, address);
+        if (wait) {
+            res.setHeader("Retry-After", String(wait));
+            res.status(429).json({ error: "too_many_attempts", message: `Too many wrong passwords. Try again in ${wait < 90 ? `${wait} seconds` : `${Math.ceil(wait / 60)} minutes`}.` });
+            return;
+        }
+        // A missing account takes as long as a wrong password, so the time an
+        // answer takes does not say which usernames exist.
+        const ok = bcrypt.compareSync(String(password ?? ""), user?.password ?? noAccountHash());
+        if (!user || !ok) {
+            loginLimiter.failed(who, address);
             res.status(401).json({ error: "Invalid credentials" });
             return;
         }
+        loginLimiter.succeeded(who);
 
         const isAdmin = user.is_admin === 1;
         const canManageUsers = user.can_manage_users === 1;
@@ -426,10 +500,13 @@ router.post("/login", async (req, res) => {
         // Check System MFA Enforcement
         const mfaEnforced = SettingsService.getInstance().get('mfa_enforced') === 'true';
         const mfaEnabled = user.mfa_enabled === 1;
+        // Someone who turned codes on for themselves gets asked for one once
+        // mail can deliver it. Before that, asking would lock them out.
+        const askCode = mfaEnabled && (mfaEnforced || MailService.getInstance().isConfigured());
 
         // Check Trusted Device
         let isTrustedDevice = false;
-        if (mfaEnforced && mfaEnabled && deviceToken) {
+        if (askCode && deviceToken) {
             const device = db.prepare("SELECT id FROM user_devices WHERE user_id = ? AND device_token = ?").get(user.id, deviceToken) as any;
             if (device) {
                 isTrustedDevice = true;
@@ -438,18 +515,18 @@ router.post("/login", async (req, res) => {
         }
 
         // 1. User has MFA Enabled (Challenge ONLY if Enforced AND NOT Trusted)
-        if (mfaEnforced && mfaEnabled && !isTrustedDevice) {
+        if (askCode && !isTrustedDevice) {
             if (!user.email) {
                 res.status(403).json({ error: "MFA is enabled but no email is configured. Please contact admin." });
                 return;
             }
 
-            // Generate Code
-            const code = Math.floor(100000 + Math.random() * 900000).toString();
+            const code = newCode();
             const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
             const update = db.prepare("UPDATE users SET mfa_code = ?, mfa_expires = ? WHERE id = ?");
             update.run(code, expires, user.id);
+            codeTries.delete(user.id);
 
             // Send Email
             await EmailService.getInstance().sendMFACode(user.email, code);
@@ -457,7 +534,7 @@ router.post("/login", async (req, res) => {
             res.json({
                 mfaRequired: true,
                 username: user.username,
-                emailMasked: user.email.replace(/(.{2})(.*)(@.*)/, "$1***$3")
+                emailMasked: user.email.replace(/^(.)(.*)(@.*)$/, "$1•••$3")
             });
             return;
         }
@@ -506,7 +583,7 @@ router.post("/login", async (req, res) => {
             id: user.id,
             isAdmin,
             canManageUsers
-        }, SECRET, { expiresIn: '24h' });
+        }, SECRET, { expiresIn: life });
         res.json({ token, username: user.username, isAdmin, canManageUsers });
 
     } catch (e: any) {
@@ -526,7 +603,7 @@ router.post("/auth/setup/email-challenge", authenticateToken, async (req, res) =
     }
 
     try {
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const code = newCode();
         const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
         const db = DatabaseService.getInstance().getDb();
@@ -559,10 +636,19 @@ router.post("/auth/setup/email-verify", authenticateToken, (req, res) => {
             return;
         }
 
-        if (dbUser.mfa_code !== code) {
+        if (!sameCode(dbUser.mfa_code, code)) {
+            const n = (codeTries.get(dbUser.id) ?? 0) + 1;
+            codeTries.set(dbUser.id, n);
+            if (n >= MAX_CODE_TRIES) {
+                db.prepare("UPDATE users SET mfa_code = NULL, mfa_expires = NULL WHERE id = ?").run(dbUser.id);
+                codeTries.delete(dbUser.id);
+                res.status(429).json({ error: "Too many wrong codes. Ask for a new one." });
+                return;
+            }
             res.status(401).json({ error: "Invalid code" });
             return;
         }
+        codeTries.delete(dbUser.id);
 
         // SUCCESS: Verify Email + Auto-Enable MFA + Clear Restricted State
         db.prepare(`
@@ -597,7 +683,7 @@ router.post("/auth/setup/email-verify", authenticateToken, (req, res) => {
 });
 
 router.post("/auth/mfa/verify", (req, res) => {
-    const { username, code, rememberMe } = req.body;
+    const { username, code, rememberMe, remember } = req.body ?? {};
     try {
         const db = DatabaseService.getInstance().getDb();
         const stmt = db.prepare("SELECT * FROM users WHERE username = ?");
@@ -618,10 +704,21 @@ router.post("/auth/mfa/verify", (req, res) => {
             return;
         }
 
-        if (user.mfa_code !== code) {
-            res.status(401).json({ error: "Invalid MFA code" });
+        if (!sameCode(user.mfa_code, code)) {
+            // Five wrong tries and the code is gone: a 6-digit code with
+            // unlimited tries falls to a script well inside its 10 minutes.
+            const n = (codeTries.get(user.id) ?? 0) + 1;
+            codeTries.set(user.id, n);
+            if (n >= MAX_CODE_TRIES) {
+                db.prepare("UPDATE users SET mfa_code = NULL, mfa_expires = NULL WHERE id = ?").run(user.id);
+                codeTries.delete(user.id);
+                res.status(429).json({ error: "Too many wrong codes. Sign in again for a new one." });
+                return;
+            }
+            res.status(401).json({ error: `That code is not right. ${MAX_CODE_TRIES - n} tr${MAX_CODE_TRIES - n === 1 ? "y" : "ies"} left.` });
             return;
         }
+        codeTries.delete(user.id);
 
         // Success - clear code
         const update = db.prepare("UPDATE users SET mfa_code = NULL, mfa_expires = NULL WHERE id = ?");
@@ -641,7 +738,7 @@ router.post("/auth/mfa/verify", (req, res) => {
             id: user.id,
             isAdmin,
             canManageUsers
-        }, SECRET, { expiresIn: '24h' });
+        }, SECRET, { expiresIn: remember ? '30d' : '24h' });
         res.json({ token, username: user.username, isAdmin, canManageUsers, deviceToken });
 
     } catch (e) {
@@ -664,7 +761,7 @@ router.post("/auth/mfa/resend", async (req, res) => {
         }
 
         // Generate Code (Reuse logic or make minimal func?)
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const code = newCode();
         const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
         const update = db.prepare("UPDATE users SET mfa_code = ?, mfa_expires = ? WHERE id = ?");
@@ -689,13 +786,17 @@ router.post("/change-password", authenticateToken, (req, res) => {
     const { currentPassword, newPassword } = req.body;
     const user = (req as any).user;
 
-    if (!newPassword) {
-        res.status(400).json({ error: "New password required" });
+    if (typeof newPassword !== "string" || newPassword.length < 12) {
+        res.status(400).json({ error: "A password is at least 12 characters." });
         return;
     }
-
-    // If currentPassword is provided, validate it
-    if (currentPassword) {
+    // Always the current one first: a session left open is not a licence to
+    // take the account over. This used to be skipped when it was left blank.
+    if (typeof currentPassword !== "string" || !currentPassword) {
+        res.status(400).json({ error: "Enter your current password." });
+        return;
+    }
+    {
         try {
             const db = DatabaseService.getInstance().getDb();
             const stmt = db.prepare("SELECT password FROM users WHERE id = ?");
@@ -722,19 +823,50 @@ router.post("/change-password", authenticateToken, (req, res) => {
     }
 });
 
+// Someone else's password, set by a person who manages their account: the way
+// back in for someone who forgot theirs, since there is no reset by email.
+// Your own goes through /change-password, which asks for the current one.
+router.post("/users/:id/password", authenticateToken, (req, res) => {
+    const me = (req as any).user;
+    const id = Number(req.params.id);
+    const { newPassword } = req.body ?? {};
+    if (id === Number(me.id)) {
+        res.status(400).json({ error: "use_change_password", message: "Change your own password under Account, with your current one." });
+        return;
+    }
+    if (!permissionsService.canModifyUser(Number(me.id), id)) {
+        res.status(403).json({ error: "cannot_modify_user", message: "You cannot change that account." });
+        return;
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 12) {
+        res.status(400).json({ error: "password_too_short", message: "A password is at least 12 characters." });
+        return;
+    }
+    const db = DatabaseService.getInstance().getDb();
+    const done = db.prepare("UPDATE users SET password = ? WHERE id = ?").run(bcrypt.hashSync(newPassword, 10), id);
+    if (done.changes === 0) {
+        res.status(404).json({ error: "no_such_user", message: "There is no such account." });
+        return;
+    }
+    res.json({ message: "Password set." });
+});
+
 // Get Current User Profile
 router.get("/users/me", authenticateToken, (req, res) => {
     const currentUser = (req as any).user;
     try {
         const db = DatabaseService.getInstance().getDb();
-        const stmt = db.prepare("SELECT id, username, email, is_admin as isAdmin, mfa_enabled FROM users WHERE id = ?");
+        const stmt = db.prepare("SELECT id, username, email, display_name AS displayName, created_at AS createdAt, is_admin as isAdmin, is_primary_admin, can_manage_users, mfa_enabled FROM users WHERE id = ?");
         const user = stmt.get(currentUser.id) as any;
 
         if (user) {
             res.json({
                 ...user,
                 isAdmin: user.isAdmin === 1,
-                mfaEnabled: user.mfa_enabled === 1
+                isPrimaryAdmin: user.is_primary_admin === 1,
+                canManageUsers: user.can_manage_users === 1,
+                mfaEnabled: user.mfa_enabled === 1,
+                mfaEnforced: SettingsService.getInstance().get('mfa_enforced') === 'true',
             });
         } else {
             res.status(404).json({ error: "User not found" });
@@ -770,6 +902,22 @@ router.patch("/users/:id", authenticateToken, (req, res) => {
         res.status(403).json({ error: "Cannot demote primary admin" });
         return;
     }
+    // A username is what scripts, tokens and the audit log know someone by.
+    if (req.body.username !== undefined) {
+        res.status(400).json({ error: "A username can't be changed." });
+        return;
+    }
+    // Sign-in accepts an email, so two accounts must not share one.
+    if (typeof email === "string" && email.trim()) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { res.status(400).json({ error: "That email does not look right." }); return; }
+        const other = DatabaseService.getInstance().getDb().prepare("SELECT id FROM users WHERE lower(email) = lower(?) AND id != ?").get(email.trim(), Number(id));
+        if (other) { res.status(409).json({ error: "Another account uses that email." }); return; }
+    }
+    // When the instance requires codes, only an admin can turn them off for someone.
+    if (mfaEnabled === false && !currentUser.isAdmin && SettingsService.getInstance().get('mfa_enforced') === 'true') {
+        res.status(403).json({ error: "This instance requires sign-in codes. An admin can turn yours off." });
+        return;
+    }
 
     try {
         const db = DatabaseService.getInstance().getDb();
@@ -781,14 +929,9 @@ router.patch("/users/:id", authenticateToken, (req, res) => {
             values.push(displayName);
         }
 
-        if (req.body.username !== undefined) {
-            updates.push("username = ?");
-            values.push(req.body.username);
-        }
-
         if (email !== undefined) {
             updates.push("email = ?");
-            values.push(email);
+            values.push(typeof email === "string" && email.trim() ? email.trim() : null);
         }
 
         if (isAdmin !== undefined && currentUser.isAdmin) {
@@ -829,6 +972,12 @@ router.patch("/users/:id", authenticateToken, (req, res) => {
 // Permission Management Routes
 router.get("/users/:id/permissions", authenticateToken, (req, res) => {
     const { id } = req.params;
+    const me = (req as any).user;
+    // What someone may do is for them and for the people who manage accounts.
+    if (Number(id) !== me.id && !me.isAdmin && !me.canManageUsers) {
+        res.status(403).json({ error: "You can only see your own permissions." });
+        return;
+    }
     try {
         const perms = permissionsService.getUserPermissions(Number(id));
         res.json({ permissions: perms });
@@ -906,7 +1055,7 @@ router.get("/targets", authenticateToken, (req, res) => {
 
         // IF NOT ADMIN AND NO EDIT YAML => SANITIZE
         if (!user.isAdmin && !canEditYaml) {
-            const { steps, env, kubernetes, filePath, ...safe } = t;
+            const { steps, kubernetes, filePath, ...safe } = t;
             return { ...safe, permissions };
         }
 
@@ -930,6 +1079,8 @@ router.get("/builds", authenticateToken, (req, res) => {
 
 router.post("/run-pipeline", authenticateToken, (req, res) => {
     const { target } = req.body;
+    // "Rerun step": start at this step, in the workspace the last run left.
+    const fromStep = typeof req.body?.fromStep === "string" && req.body.fromStep.trim() ? req.body.fromStep : undefined;
     const user = (req as any).user;
     Logger.getInstance().info(`Received run-pipeline request for target: ${target} by user ${user.username}`);
 
@@ -979,6 +1130,20 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
         return;
     }
 
+    if (fromStep && !pipeline.steps.some((s: any) => s.name === fromStep)) {
+        res.status(400).json({ error: `This pipeline has no step called "${fromStep}".` });
+        return;
+    }
+
+    // requireConfirmation is a rule about the pipeline, not about one screen: a
+    // run started any way at all (the API, the palette, a script) has to say it
+    // was confirmed. Schedules and git watches were set up by someone who could
+    // run it, and do not come through here.
+    if (pipeline.requireConfirmation && req.body?.confirmed !== true) {
+        res.status(409).json({ error: "confirmation_required", message: `${pipeline.appName} asks for confirmation before each run. Send "confirmed": true once the person has confirmed.` });
+        return;
+    }
+
     // Start build tracking (Sync)
     const build = EZPipelineController.instance.start_build(pipeline);
 
@@ -1004,6 +1169,7 @@ router.post("/run-pipeline", authenticateToken, (req, res) => {
       // The person, not the word "manual". Every row said manual before,
       // including the ones nobody started.
       triggeredBy: user?.username ? String(user.username) : 'manual',
+      fromStep,
     }).catch(e => {
         Logger.getInstance().error(`Pipeline run failed for ${pipelineTarget}`, e);
     });
@@ -1100,13 +1266,9 @@ router.post("/config/content", authenticateToken, (req, res) => {
         if (type === 'env') {
             requiredPerm = 'editEnv';
             if (req.body.keysOnly) {
+                // Key names alone are enough for someone who edits the YAML
+                // to reference them; editEnv is still what reveals the values.
                 isKeysOnly = true;
-                // If asking for keys only, we allow editYaml to suffice if they don't have editEnv
-                // BUT we must check editEnv first. Logic:
-                // If they have editEnv -> Good.
-                // If they don't -> Check editYaml. If yes -> Good (but content stripped).
-                // If neither -> 403.
-                // Simplified: We check specific permissions later.
             }
         } else if (reqPath.includes('/resources/') || reqPath.includes('\\resources\\')) {
             requiredPerm = 'viewResources';
@@ -1147,17 +1309,8 @@ router.post("/config/content", authenticateToken, (req, res) => {
                 .filter(l => l && !l.startsWith('#') && l.includes('='))
                 .map(l => l.split('=')[0]);
 
-            // Return dummy content or specific keys object? 
-            // Client expects { content } usually. Let's return keys as content for now? 
-            // Or better, change response structure? 
-            // Client looks for `data.content`. If we request keysOnly, we probably expect structured data.
-            // But existing client code might expect string.
-            // Let's look at client usage: `const vars = data.content.split('\n')...`
-            // If we return just keys joined by newlines, client logic `l.includes('=')` will fail to find anything.
-            // Client logic: `.filter(l => l && !l.startsWith('#') && l.includes('='))`
-            // If we return "KEY1\nKEY2", filter will kill them.
-            // We should return "KEY1=\nKEY2=" (empty values) so client parses keys but sees empty values.
-            // This is safe.
+            // "KEY=" with the value blank, not bare names: the same .env
+            // parser reads it, and a bare "KEY" line would be dropped by it.
             const safeContent = keys.map(k => `${k}=`).join('\n');
             res.json({ content: safeContent });
             return;
@@ -1170,9 +1323,16 @@ router.post("/config/content", authenticateToken, (req, res) => {
     }
 });
 
+/** "A/B" with each part a plain name, or "" for ungrouped. Never a path that climbs out. */
+const safeGroup = (g: unknown) => String(g ?? "").split("/").map((x) => x.trim()).filter(Boolean).map((x) => safeName(x, "group name")).join("/");
+
 router.post("/config/create-pipeline", authenticateToken, (req, res) => {
-    const { group, name } = req.body;
     const user = (req as any).user;
+    let group: string, name: string;
+    try { group = safeGroup(req.body?.group); name = safeName(req.body?.name, "pipeline name"); }
+    catch (e: any) { res.status(400).json({ error: e.message }); return; }
+    const template = req.body?.template ? TEMPLATES.find((t) => t.id === req.body.template) : undefined;
+    if (req.body?.template && !template) { res.status(400).json({ error: "No such template." }); return; }
 
     // Check permission - need WRITE access to the Group or Admin
     if (!user.isAdmin) {
@@ -1185,18 +1345,22 @@ router.post("/config/create-pipeline", authenticateToken, (req, res) => {
     }
 
     try {
-        configController.createPipelineBundle(group, name, user.username);
+        const id = uuidv4();
+        configController.createPipelineBundle(group, name, user.username, template ? template.yaml({ id, name, author: user.username }) : undefined, id);
         EZPipelineController.instance.refreshTargets();
-        res.json({ message: "Pipeline bundle created successfully" });
+        res.json({ message: "Pipeline bundle created successfully", id });
     } catch (e: any) {
         Logger.getInstance().error(`Failed to create pipeline bundle: ${name}`, e);
-        res.status(500).json({ error: e.message });
+        res.status(/already exists/.test(e.message) ? 409 : 500).json({ error: e.message });
     }
 });
 
 router.post("/config/copy-pipeline", authenticateToken, (req, res) => {
-    const { sourceId, group, name } = req.body;
+    const { sourceId } = req.body ?? {};
     const user = (req as any).user;
+    let group: string, name: string;
+    try { group = safeGroup(req.body?.group); name = safeName(req.body?.name, "pipeline name"); }
+    catch (e: any) { res.status(400).json({ error: e.message }); return; }
 
     // Permission check
     if (!permissionsService.checkAccess(user.id, sourceId, 'read')) {
@@ -1234,6 +1398,13 @@ router.post("/config/copy-pipeline", authenticateToken, (req, res) => {
 });
 
 // Fix shadowing of 'path' module
+// What is wrong with a pipeline file, line by line, for the editor as you type. Saves nothing.
+router.post("/config/validate", authenticateToken, (req, res) => {
+    const content = typeof req.body?.content === "string" ? req.body.content : "";
+    if (content.length > 512 * 1024) { res.status(413).json({ error: "Too big to check." }); return; }
+    res.json({ problems: checkPipelineYaml(content, parseDocument) });
+});
+
 router.post("/config/save", authenticateToken, (req, res) => {
     const { type, path: reqPath, content } = req.body;
     const user = (req as any).user;
@@ -1303,6 +1474,7 @@ router.post("/config/save", authenticateToken, (req, res) => {
         EZPipelineController.instance.refreshTargets();
         res.json({ message: "File saved successfully" });
     } catch (e: any) {
+        if (e?.status === 400) { res.status(400).json({ error: e.message, problems: e.problems }); return; }
         Logger.getInstance().error(`Failed to save config file: ${reqPath}`, e);
         res.status(500).json({ error: e.message });
     }
@@ -1378,7 +1550,13 @@ router.post("/config/move", authenticateToken, (req, res) => {
 });
 
 // Global Resources Routes
+// A global resource is copied into every pipeline's workspace, so it is the
+// admins' to list, add and delete, the same as deleting always was.
 router.get("/config/global-resources", authenticateToken, (req, res) => {
+    if (!(req as any).user?.isAdmin) {
+        res.status(403).json({ error: "admin_only", message: "Only an admin can see global resources." });
+        return;
+    }
     try {
         const resources = configController.getGlobalResources();
         res.json({ files: resources });
@@ -1388,6 +1566,11 @@ router.get("/config/global-resources", authenticateToken, (req, res) => {
 });
 
 router.post("/config/global-resources/upload", authenticateToken, globalUpload.single('file'), (req, res) => {
+    if (!(req as any).user?.isAdmin) {
+        if (req.file) fs.rm(req.file.path, { force: true }, () => {});
+        res.status(403).json({ error: "admin_only", message: "Only an admin can add a global resource." });
+        return;
+    }
     if (!req.file) {
         res.status(400).json({ error: "No file uploaded" });
         return;
@@ -1511,18 +1694,6 @@ router.post("/config/rename-folder", authenticateToken, (req, res) => {
     }
 });
 
-router.post("/abort", authenticateToken, (req, res) => {
-    const { id } = req.body;
-    setImmediate(() => {
-        try {
-            EZPipelineController.instance.abort(Number(id));
-            res.end("ok");
-        } catch (e) {
-            res.end((e as Error).message);
-        }
-    });
-});
-
 // ── Log stream tickets ──────────────────────────────────────────────────────
 //
 // EventSource CANNOT SET HEADERS. That is a real browser limitation, and the
@@ -1603,32 +1774,147 @@ router.get("/logs-stream", (req: Request, res: Response, next: NextFunction) => 
     // Send initial connection message
     res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Connected to log stream' })}\n\n`);
 
-    logger.addClient(res);
-
-    // Event Listeners for Pipeline Progress
-    const sendEvent = (event: string, data: any) => {
-        res.write(`data: ${JSON.stringify({ type: event, data })}\n\n`);
+    // Who is on the other end decides what they are sent. A build's lines
+    // and events go only to people who may view its pipeline; the server's
+    // own log (paths, plugin installs, other people's activity) only to
+    // admins. Before this, every signed-in user received everything.
+    const userId = Number((req as any).user.id);
+    const isAdmin = permissionsService.isAdmin(userId);
+    const viewCache = new Map<string, boolean>();
+    const mayView = (pipelineId: string) => {
+        if (isAdmin) return true;
+        let ok = viewCache.get(pipelineId);
+        if (ok === undefined) {
+            ok = canOnPipeline(userId, pipelineId, 'view');
+            viewCache.set(pipelineId, ok);
+        }
+        return ok;
     };
+    logger.addClient(res, (scope) => (scope.build ? mayView(scope.build.pipelineId) : isAdmin));
 
     const controller = EZPipelineController.instance;
+    // Named handlers, so close can remove exactly these. The old cleanup
+    // passed a different function to off() than it gave to on(), removed
+    // nothing, and every closed tab left five listeners behind.
+    const EVENTS = ["build_start", "progress", "build_complete", "build_error", "build_aborted", "build_paused", "build_approved", "commit_resolved", "substep"] as const;
+    const handlers = EVENTS.map((event) => {
+        const fn = (data: any) => {
+            const pipelineId = data?.target ?? data?.pipelineId;
+            if (pipelineId && !mayView(pipelineId)) return;
+            res.write(`data: ${JSON.stringify({ type: event, buildId: data?.id, pipelineId, data })}\n\n`);
+        };
+        controller.on(event, fn);
+        return [event, fn] as const;
+    });
 
-    controller.on("build_start", (build: any) => sendEvent("build_start", build));
-    controller.on("progress", (build: any) => sendEvent("progress", build));
-    controller.on("build_complete", (build: any) => sendEvent("build_complete", build));
-    controller.on("build_error", (build: any) => sendEvent("build_error", build));
-    controller.on("build_aborted", (build: any) => sendEvent("build_aborted", build));
+    // A comment line every 25s keeps proxies from closing an idle stream.
+    const ping = setInterval(() => res.write(`: ping\n\n`), 25_000);
 
-    // Cleanup listeners on disconnect
     req.on("close", () => {
-        controller.off("build_start", sendEvent);
-        controller.off("progress", sendEvent);
-        controller.off("build_complete", sendEvent);
-        controller.off("build_error", sendEvent);
-        controller.off("build_aborted", sendEvent);
+        clearInterval(ping);
+        for (const [event, fn] of handlers) controller.off(event, fn);
     });
 });
 
+// ── Commits not yet deployed ────────────────────────────────────────────────
+//
+// What would ship if this pipeline ran now: the commits on its watched branch
+// above the last commit a SUCCESSFUL run built. Needs a git watch, because
+// that is the only place a pipeline's repository and branch are recorded.
+router.get("/pipelines/:targetName/pending-commits", authenticateToken, requirePipeline("view"), async (req, res) => {
+    const target = String(req.params.targetName);
+    const db = DatabaseService.getInstance().getDb();
+    const p = EZPipelineController.instance.targets.find((t) => t.id === target || t.appName === target);
+    const names = [target, p?.id, p?.appName].filter(Boolean) as string[];
+    const marks = names.map(() => "?").join(",");
+    const watch = db.prepare(`SELECT * FROM git_watches WHERE pipeline_target IN (${marks}) ORDER BY enabled DESC, id LIMIT 1`).get(...names) as any;
+    if (!watch) {
+        res.json({ repo: null, branch: null, deployedSha: null, headSha: null, commits: [], reason: "no-watch" });
+        return;
+    }
+    const deployed = db.prepare(`SELECT commit_sha FROM builds WHERE target IN (${marks}) AND status = 'success' AND commit_sha IS NOT NULL ORDER BY started_at DESC LIMIT 1`).get(...names) as { commit_sha: string } | undefined;
+    const deployedSha = deployed?.commit_sha ?? null;
+    const headSha: string | null = watch.last_sha ?? null;
+    if (!headSha) {
+        res.json({ repo: watch.repo_url, branch: watch.branch, deployedSha, headSha, commits: [], reason: "not-checked-yet" });
+        return;
+    }
+    try {
+        const log = await CommitService.getInstance().range(watch.repo_url, deployedSha, headSha, watch.group_path);
+        res.json({ repo: watch.repo_url, branch: watch.branch, deployedSha, headSha, commits: pendingFrom(log, deployedSha) });
+    } catch (e: any) {
+        res.status(502).json({ error: `Could not read ${watch.repo_url}: ${String(e?.message ?? e).slice(0, 300)}` });
+    }
+});
+
+// ── Per-user UI state ───────────────────────────────────────────────────────
+// A short allowlist of keys, each a small JSON value. Not a general store.
+const USER_STATE_KEYS = new Set(["notifications.seenAt", "sidebar.collapsed", "runs.filter", "checklist.hidden", "tour.done"]);
+
+router.get("/me/state", authenticateToken, (req, res) => {
+    const rows = DatabaseService.getInstance().getDb()
+        .prepare(`SELECT key, value FROM user_state WHERE user_id = ?`).all((req as any).user.id) as { key: string; value: string }[];
+    const state: Record<string, unknown> = {};
+    for (const r of rows) { try { state[r.key] = JSON.parse(r.value); } catch { /* skip */ } }
+    res.json({ state });
+});
+
+router.put("/me/state/:key", authenticateToken, (req, res) => {
+    const key = String(req.params.key);
+    if (!USER_STATE_KEYS.has(key)) { res.status(400).json({ error: "Unknown key." }); return; }
+    const value = JSON.stringify(req.body?.value ?? null);
+    if (value.length > 4000) { res.status(413).json({ error: "Too large." }); return; }
+    DatabaseService.getInstance().getDb().prepare(
+        `INSERT INTO user_state (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).run((req as any).user.id, key, value, new Date().toISOString());
+    res.json({ ok: true });
+});
+
+// ── Admin: audit log and system ─────────────────────────────────────────────
+
+router.get("/admin/audit", authenticateToken, requireAdmin, (req, res) => {
+    const q = req.query as Record<string, string | undefined>;
+    const events = AuditService.getInstance().list({
+        user: q.user, target: q.target, action: q.action, since: q.since, until: q.until,
+        before: q.before ? Number(q.before) : undefined, limit: q.limit ? Number(q.limit) : undefined,
+    });
+    res.json({ events, next: events.length ? events[events.length - 1].id : null });
+});
+
+router.get("/system/health", authenticateToken, requireAdmin, async (_req, res) => {
+    try {
+        res.json(await systemHealth());
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * Exit, and let whatever runs the server start it again: Docker's restart
+ * policy, or the desktop app's supervisor. Refused where nothing would, since
+ * then "restart" means "stop".
+ */
+router.post("/system/restart", authenticateToken, requireAdmin, async (_req, res) => {
+    const health = await systemHealth();
+    if (!health.canRestart) {
+        res.status(409).json({ error: "Nothing would start the server again here. Restart it where it runs." });
+        return;
+    }
+    if (health.jobs.some((j: any) => j.status === "running")) {
+        res.status(409).json({ error: "A build is running. Wait for it, or abort it, first." });
+        return;
+    }
+    res.status(202).json({ message: "Restarting." });
+    Logger.getInstance().warn("Restart requested by an admin; exiting so the supervisor restarts the server.");
+    setTimeout(() => process.exit(0), 300);
+});
+
 router.delete("/clear-builds", authenticateToken, (req, res) => {
+    if (!permissionsService.isAdmin(Number((req as any).user.id))) {
+        res.status(403).json({ error: "Only an admin can clear builds." });
+        return;
+    }
     EZPipelineController.instance.clear_builds();
     res.end();
 });
@@ -1636,16 +1922,21 @@ router.delete("/clear-builds", authenticateToken, (req, res) => {
 // User Management Routes
 router.get("/users", authenticateToken, (req, res) => {
     try {
+        const me = (req as any).user;
         const db = DatabaseService.getInstance().getDb();
-        const stmt = db.prepare("SELECT id, username, email, created_at, is_admin as isAdmin, can_manage_users as canManageUsers FROM users");
-        const users = stmt.all();
-        // Convert to boolean
-        const usersMapped = users.map((u: any) => ({
-            ...u,
-            isAdmin: u.isAdmin === 1,
-            canManageUsers: u.canManageUsers === 1
-        }));
-        res.json({ users: usersMapped });
+        // Everyone else's email and sign-in state is for the people who manage
+        // accounts. Anyone else gets names, which is all a picker needs.
+        if (!me.isAdmin && !me.canManageUsers) {
+            res.json({ users: db.prepare("SELECT id, username, display_name AS displayName FROM users ORDER BY username").all() });
+            return;
+        }
+        const seen = new Map((db.prepare(`SELECT username, MAX(at) AS at FROM audit_events WHERE action = 'POST /login' AND status = 200 GROUP BY username`).all() as { username: string; at: string }[]).map((r) => [r.username, r.at]));
+        const users = db.prepare("SELECT id, username, email, display_name, created_at, is_admin, is_primary_admin, can_manage_users, mfa_enabled FROM users ORDER BY is_primary_admin DESC, is_admin DESC, username").all() as any[];
+        res.json({ users: users.map((u) => ({
+            id: u.id, username: u.username, email: u.email, displayName: u.display_name || u.username, createdAt: u.created_at,
+            isAdmin: u.is_admin === 1, isPrimaryAdmin: u.is_primary_admin === 1, canManageUsers: u.can_manage_users === 1,
+            mfaEnabled: u.mfa_enabled === 1, lastSignIn: seen.get(u.username) ?? null,
+        })) });
     } catch (e) {
         res.status(500).json({ error: "Failed to fetch users" });
     }
@@ -1653,6 +1944,8 @@ router.get("/users", authenticateToken, (req, res) => {
 
 router.post("/users", authenticateToken, (req, res) => {
     const { username, password, isAdmin } = req.body;
+    const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+    const displayName = typeof req.body?.displayName === "string" ? req.body.displayName.trim().slice(0, 80) : "";
     const currentUser = (req as any).user;
 
     // Check if user has permission to create users
@@ -1661,23 +1954,37 @@ router.post("/users", authenticateToken, (req, res) => {
         return;
     }
 
-    // Only admins can create other admins
-    if (isAdmin && !currentUser.isAdmin) {
-        res.status(403).json({ error: "Only admins can create admin users" });
+    // Only admins can create other admins, or people who manage accounts.
+    const canManageUsers = req.body?.canManageUsers === true;
+    if ((isAdmin || canManageUsers) && !currentUser.isAdmin) {
+        res.status(403).json({ error: isAdmin ? "Only admins can create admin users" : "Only admins can let someone manage users" });
         return;
     }
 
-    if (!username || !password) {
-        res.status(400).json({ error: "Username and password required" });
+    // The same rules as the first admin's account in setup.
+    if (typeof username !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,39}$/.test(username)) {
+        res.status(400).json({ error: "A username is 2 to 40 letters, digits, dots, dashes or underscores." });
+        return;
+    }
+    if (typeof password !== "string" || password.length < 12) {
+        res.status(400).json({ error: "A password is at least 12 characters." });
+        return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        res.status(400).json({ error: "That email does not look right." });
         return;
     }
 
     try {
         const db = DatabaseService.getInstance().getDb();
+        if (email && db.prepare("SELECT id FROM users WHERE lower(email) = lower(?)").get(email)) {
+            res.status(409).json({ error: "Another account uses that email." });
+            return;
+        }
         const hashedPassword = bcrypt.hashSync(password, 10);
-        const stmt = db.prepare("INSERT INTO users (username, password, is_admin) VALUES (?, ?, ?)");
-        stmt.run(username, hashedPassword, isAdmin ? 1 : 0);
-        res.json({ message: "User created" });
+        const stmt = db.prepare("INSERT INTO users (username, password, is_admin, can_manage_users, email, display_name) VALUES (?, ?, ?, ?, ?, ?)");
+        const made = stmt.run(username, hashedPassword, isAdmin ? 1 : 0, canManageUsers ? 1 : 0, email || null, displayName || null);
+        res.json({ message: "User created", id: Number(made.lastInsertRowid) });
     } catch (e: any) {
         if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
             res.status(400).json({ error: "Username already exists" });
@@ -1721,7 +2028,7 @@ router.delete("/users/:id", authenticateToken, (req, res) => {
 // Agent Token Management
 const agentService = AgentService.getInstance();
 
-router.get("/agent-tokens", authenticateToken, (req, res) => {
+router.get("/agent-tokens", authenticateToken, requireAdmin, (req, res) => {
     try {
         const tokens = agentService.listTokens();
         res.json({ tokens });
@@ -1730,21 +2037,28 @@ router.get("/agent-tokens", authenticateToken, (req, res) => {
     }
 });
 
-router.post("/agent-tokens", authenticateToken, async (req, res) => {
+router.post("/agent-tokens", authenticateToken, requireAdmin, async (req, res) => {
     const { name } = req.body;
+    const ALLOWED = ["yaml:read", "yaml:write"];
+    const requested: string[] = Array.isArray(req.body?.scopes) ? req.body.scopes.map(String) : ["yaml:read"];
+    const scopes = requested.filter((s) => ALLOWED.includes(s));
+    if (scopes.length === 0) {
+        res.status(400).json({ error: `scopes must include one of ${ALLOWED.join(", ")}` });
+        return;
+    }
     if (!name) {
         res.status(400).json({ error: "Name is required" });
         return;
     }
     try {
-        const result = await agentService.createToken(name);
+        const result = await agentService.createToken(name, scopes);
         res.json(result);
     } catch (e) {
         res.status(500).json({ error: "Failed to create token" });
     }
 });
 
-router.delete("/agent-tokens/:id", authenticateToken, (req, res) => {
+router.delete("/agent-tokens/:id", authenticateToken, requireAdmin, (req, res) => {
     const { id } = req.params;
     try {
         agentService.deleteToken(Number(id));
@@ -1757,7 +2071,8 @@ router.delete("/agent-tokens/:id", authenticateToken, (req, res) => {
 // Schedule Management Routes
 router.get("/schedules", authenticateToken, (req, res) => {
     try {
-        const schedules = scheduler.getAllSchedules();
+        const user = (req as any).user;
+        const schedules = scheduler.getAllSchedules().filter((x: any) => canOnPipeline(Number(user.id), x.pipeline_target, 'view'));
         res.json({ schedules });
     } catch (e) {
         Logger.getInstance().error(`Failed to get schedules: ${e}`);
@@ -1765,7 +2080,7 @@ router.get("/schedules", authenticateToken, (req, res) => {
     }
 });
 
-router.get("/schedules/:pipeline", authenticateToken, (req, res) => {
+router.get("/schedules/:pipeline", authenticateToken, requirePipeline("view", "pipeline"), (req, res) => {
     const { pipeline } = req.params;
     try {
         const schedules = scheduler.getSchedulesForPipeline(pipeline);
@@ -1781,7 +2096,7 @@ router.post("/schedules", authenticateToken, (req, res) => {
     const user = (req as any).user;
 
     // Check if user has permission to run the pipeline
-    if (!permissionsService.checkPermission(user.id, pipelineTarget, 'run')) {
+    if (!canOnPipeline(Number(user.id), String(pipelineTarget), 'run')) {
         res.status(403).json({ error: "You don't have permission to schedule this pipeline" });
         return;
     }
@@ -1800,8 +2115,10 @@ router.delete("/schedules/:id", authenticateToken, (req, res) => {
     const user = (req as any).user;
 
     // Only admins or the creator can delete schedules
-    if (!permissionsService.isAdmin(user.id)) {
-        res.status(403).json({ error: "Only admins can delete schedules" });
+    const sched = scheduler.getAllSchedules().find((x: any) => x.id === Number(req.params.id)) as any;
+    if (!sched) { res.status(404).json({ error: "No such schedule." }); return; }
+    if (!canOnPipeline(Number(user.id), sched.pipeline_target, 'run')) {
+        res.status(403).json({ error: "You need \"run\" on that pipeline to change its schedules" });
         return;
     }
 
@@ -1818,10 +2135,23 @@ router.delete("/schedules/:id", authenticateToken, (req, res) => {
 router.get("/plugins", authenticateToken, async (req, res) => {
     try {
         const plugins = await pluginManager.refreshPlugins();
-        res.json({ plugins });
+        // Which pipelines call each tool, so Remove can say what would break.
+        const texts = EZPipelineController.instance.targets.map((t) => {
+            try { return { name: t.appName, text: fs.readFileSync(path.resolve(PIPELINES_DIR, t.filePath ?? ""), "utf8") }; } catch { return { name: t.appName, text: "" }; }
+        });
+        res.json({ plugins: plugins.map((p) => {
+            if (!p.command) return p;
+            const re = new RegExp(`(^|[\\s;&|(\`$])(${p.command})(\\s|$)`, "m");
+            return { ...p, calledBy: texts.filter((x) => re.test(x.text)).map((x) => x.name) };
+        }) });
     } catch (e) {
         res.status(500).json({ error: "Failed to fetch plugins" });
     }
+});
+
+router.delete("/plugins/:id", authenticateToken, requireAdmin, (req, res) => {
+    try { pluginManager.removePlugin(String(req.params.id)); res.json({ ok: true }); }
+    catch (e: any) { res.status(e.status ?? 500).json({ error: e.message }); }
 });
 
 router.post("/plugins/:id/install", authenticateToken, async (req, res) => {
@@ -1855,8 +2185,10 @@ router.patch("/schedules/:id/toggle", authenticateToken, (req, res) => {
     const user = (req as any).user;
 
     // Only admins can toggle schedules
-    if (!permissionsService.isAdmin(user.id)) {
-        res.status(403).json({ error: "Only admins can toggle schedules" });
+    const sched = scheduler.getAllSchedules().find((x: any) => x.id === Number(req.params.id)) as any;
+    if (!sched) { res.status(404).json({ error: "No such schedule." }); return; }
+    if (!canOnPipeline(Number(user.id), sched.pipeline_target, 'run')) {
+        res.status(403).json({ error: "You need \"run\" on that pipeline to change its schedules" });
         return;
     }
 
@@ -1873,16 +2205,12 @@ router.patch("/schedules/:id/toggle", authenticateToken, (req, res) => {
 const upload = multer({
     storage: multer.diskStorage({
         destination: (req, file, cb) => {
-            const type = req.body.type === 'env' ? 'env' : 'yaml';
-            const subPath = req.body.path || '';
-
-            let dest;
-            if (type === 'yaml') {
-                // Use the correct PIPELINES_DIR from config
-                dest = path.resolve(PIPELINES_DIR, subPath);
-            } else {
-                dest = path.resolve(process.cwd(), type, subPath);
-            }
+            // Confined to the pipelines folder and checked against the user's
+            // permissions. This used to resolve any path the body named, so a
+            // signed-in user could write a file anywhere the server could.
+            const subPath = String(req.body.path || '');
+            const dest = pathAccess((req as any).user, PIPELINES_DIR, subPath, 'editYaml');
+            if (!dest) { cb(Object.assign(new Error("You cannot upload there."), { status: 403 }), ''); return; }
 
             if (!fs.existsSync(dest)) {
                 fs.mkdirSync(dest, { recursive: true });
@@ -1890,7 +2218,10 @@ const upload = multer({
             cb(null, dest);
         },
         filename: (req, file, cb) => {
-            cb(null, file.originalname);
+            // The name only: a crafted "../x" name would otherwise escape the folder checked above.
+            const name = path.basename(String(file.originalname || ''));
+            if (!name || name === '.' || name === '..') { cb(Object.assign(new Error("Bad file name."), { status: 400 }), ''); return; }
+            cb(null, name);
         }
     })
 });
@@ -1905,7 +2236,7 @@ router.post("/config/upload", authenticateToken, upload.single('file'), (req, re
         res.json({ message: "File uploaded successfully", path: req.file.path });
     } catch (e: any) {
         Logger.getInstance().error("Upload failed", e);
-        res.status(500).json({ error: e.message });
+        res.status(e.status ?? 500).json({ error: e.message });
     }
 });
 
@@ -1913,6 +2244,11 @@ router.get("/config/resources", authenticateToken, (req, res) => {
     try {
         const type = (req.query.type as "yaml" | "env") || "yaml";
         const subPath = (req.query.path as string) || "";
+        if (type === "yaml" && !pathAccess((req as any).user, PIPELINES_DIR, subPath, 'view')) {
+            res.status(403).json({ error: "You cannot list that folder." });
+            return;
+        }
+        if (type !== "yaml" && !(req as any).user?.isAdmin) { res.status(403).json({ error: "Admins only." }); return; }
         const files = configController.listFiles(type, subPath);
         res.json({ files });
     } catch (e: any) {
@@ -1925,6 +2261,10 @@ router.delete("/config/resources", authenticateToken, (req, res) => {
         const { type, path } = req.body;
         if (!path) {
             res.status(400).json({ error: "Path is required" });
+            return;
+        }
+        if ((type || 'yaml') === 'yaml' ? !pathAccess((req as any).user, PIPELINES_DIR, String(path), 'editYaml') : !(req as any).user?.isAdmin) {
+            res.status(403).json({ error: "You cannot delete that file." });
             return;
         }
         configController.deleteFile(type || 'yaml', path);
@@ -1994,8 +2334,23 @@ router.post("/builds/:id/approve", authenticateToken, (req, res) => {
     try {
         const buildId = req.params.id; // UUID
         if (!mayControlBuild(req, res, buildId)) return;
-        EZPipelineController.instance.approveBuild(buildId);
-        res.json({ message: "Build approved and resumed." });
+        const user = (req as any).user;
+        // Not awaited past the gate check: approveBuild resumes the rest of the
+        // run, which can take an hour. It throws synchronously-enough (before
+        // its first await) for a refused approval to reach this response.
+        EZPipelineController.instance
+            .approveBuild(buildId, { username: user.username ?? String(user.id), userId: user.id })
+            .then(() => { if (!res.headersSent) res.json({ message: "Build approved and resumed." }); })
+            .catch((e: any) => {
+                if (res.headersSent) return;
+                if (e instanceof ApprovalError) {
+                    res.status(e.code === "not_found" ? 404 : 409).json({ error: e.message });
+                    return;
+                }
+                Logger.getInstance().error(`Failed to approve build ${buildId}`, e);
+                res.status(500).json({ error: e.message });
+            });
+        return;
     } catch (e: any) {
         Logger.getInstance().error(`Failed to approve build ${req.params.id}`, e);
         res.status(500).json({ error: e.message });
@@ -2077,7 +2432,8 @@ router.post("/builds/:id/action", authenticateToken, async (req, res) => {
             group,
             pipelineExists: (t) => controller.targets.some((x) => x.id === t),
             startPipeline: (t, triggeredBy, autoApprove) => {
-                controller.run(t, undefined, { triggeredBy, autoApprove });
+                controller.run(t, undefined, { triggeredBy, autoApprove }).catch((e) =>
+                    Logger.getInstance().error(`Pipeline run failed for ${t}`, e));
             },
         });
 
@@ -2130,6 +2486,12 @@ router.post("/builds/:id/rollback", authenticateToken, async (req, res): Promise
             "SELECT id, target, build_number, status, commit_sha FROM builds WHERE id = ?"
         ).get(buildId) as { id: string; target: string; build_number: number; status: string; commit_sha: string | null } | undefined;
         if (!build) { res.status(404).json({ error: "No such build." }); return; }
+        // A rollback is a run of the pipeline: the same rule as POST /run-pipeline.
+        const rolled = EZPipelineController.instance.targets.find((t) => t.id === build.target);
+        if (rolled?.requireConfirmation && req.body?.confirmed !== true) {
+            res.status(409).json({ error: "confirmation_required", message: `${rolled.appName} asks for confirmation before each run. Send "confirmed": true once the person has confirmed.` });
+            return;
+        }
         if (build.status !== "success") {
             // A failed run's images may exist but were never proved to work.
             // Offering them is offering a rollback to something that was
@@ -2179,7 +2541,7 @@ router.post("/builds/:id/rollback", authenticateToken, async (req, res): Promise
 });
 
 // Versioning & Rollback Routes
-router.get("/pipelines/:targetName/versions", authenticateToken, (req, res) => {
+router.get("/pipelines/:targetName/versions", authenticateToken, requirePipeline("view"), (req, res) => {
     try {
         const { targetName } = req.params;
         const pipelineDir = EZPipelineController.instance.resolvePipelineDir(targetName);
@@ -2208,7 +2570,7 @@ router.get("/pipelines/:targetName/versions", authenticateToken, (req, res) => {
     }
 });
 
-router.delete("/pipelines/:targetName/versions/:filename", authenticateToken, (req, res) => {
+router.delete("/pipelines/:targetName/versions/:filename", authenticateToken, requirePipeline("editYaml"), (req, res) => {
     try {
         const { targetName, filename } = req.params;
         // Security check: filename should be just a name
@@ -2229,7 +2591,7 @@ router.delete("/pipelines/:targetName/versions/:filename", authenticateToken, (r
     }
 });
 
-router.get("/pipelines/:targetName/versions/:filename/download", authenticateToken, (req, res) => {
+router.get("/pipelines/:targetName/versions/:filename/download", authenticateToken, requirePipeline("view"), (req, res) => {
     try {
         const { targetName, filename } = req.params;
         if (filename.includes('/') || filename.includes('\\')) throw new Error("Invalid filename");
@@ -2248,7 +2610,7 @@ router.get("/pipelines/:targetName/versions/:filename/download", authenticateTok
     }
 });
 
-router.get("/pipelines/:targetName/rollback-plan", authenticateToken, (req, res) => {
+router.get("/pipelines/:targetName/rollback-plan", authenticateToken, requirePipeline("view"), (req, res) => {
     try {
         const { targetName } = req.params;
         const plan = EZPipelineController.instance.generateRollbackPlan(targetName);
@@ -2259,13 +2621,19 @@ router.get("/pipelines/:targetName/rollback-plan", authenticateToken, (req, res)
     }
 });
 
-router.post("/pipelines/:targetName/rollback", authenticateToken, async (req, res) => {
+router.post("/pipelines/:targetName/rollback", authenticateToken, requirePipeline("run"), async (req, res) => {
     try {
         const { targetName } = req.params;
         const { version, smartRollbackYaml } = req.body;
 
         if (!version) {
             res.status(400).json({ error: "Version is required" });
+            return;
+        }
+        // A rollback is a run of the pipeline: the same rule as POST /run-pipeline.
+        const rolled = EZPipelineController.instance.targets.find((t) => t.id === targetName || t.appName === targetName);
+        if (rolled?.requireConfirmation && req.body?.confirmed !== true) {
+            res.status(409).json({ error: "confirmation_required", message: `${rolled.appName} asks for confirmation before each run. Send "confirmed": true once the person has confirmed.` });
             return;
         }
 

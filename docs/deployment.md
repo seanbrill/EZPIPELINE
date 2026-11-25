@@ -2,20 +2,17 @@
 
 Running EZPIPELINE somewhere other than a laptop.
 
-Before anything else, two settings decide whether your install is safe, and
-neither of them warns you:
+Two settings matter before anything else:
 
-- **`JWT_SECRET` must be set.** Unset, login tokens are signed with a string
-  committed to this repository, and anyone who knows it can mint an admin
-  token. See [Configuration](configuration.md#jwt_secret).
+- **`JWT_SECRET`** signs sign-in tokens. The server will not start without
+  one outside development; generate it with `openssl rand -hex 32`. See
+  [Configuration](configuration.md#jwt_secret).
 - **`auth.required` must stay `true`** in `ezpipeline.config.json`. Set to
   `false`, the server accepts every request as a primary admin.
 
-There is a third thing worth knowing before you expose this to a team: a
-number of API routes do not check permissions, including build artifact
-download and rollback. See
-[Permissions](permissions.md#where-nothing-is-checked). Until those are fixed,
-"can log in" is close to "can read everything and redeploy anything".
+Before you give a team access, read
+[which routes check what](permissions.md#which-routes-check-what) and grant
+each person the flags they need.
 
 ---
 
@@ -72,7 +69,7 @@ paths from `__dirname` plus a fixed number of `..` segments, and building into
 |---|---|---|---|
 | `init` | default | | Prepares directories, proves `better-sqlite3` loads, exits |
 | `server` | default | 5001 | Development server, source bind-mounted |
-| `client` | default | 5000 | Vite dev server, source bind-mounted |
+| `client` | default | 5173 | Vite dev server, source bind-mounted |
 | `app` | `prod` | 5000 | The shipped image, no bind mount, no hot reload |
 
 The default services are a **development** stack. For production:
@@ -363,10 +360,11 @@ harmlessly on boot.
 - [ ] Backups running, and a restore actually tested
 - [ ] You know `useTerminal` is a shell on the host, and `useClaude` is edit
       access to every pipeline's YAML and environment
-- [ ] You have read [where permissions are not checked](permissions.md#where-nothing-is-checked)
+- [ ] You have read [which routes check what](permissions.md#which-routes-check-what)
 
-Not on the list because it does not exist: rate limiting. There is none, on
-`/api/login` or anywhere else. Put it in the proxy.
+Sign-in is rate limited by the server (see
+[Authentication](authentication.md)). Nothing else is, so put a general limit
+in the proxy if the instance faces the internet.
 
 ---
 

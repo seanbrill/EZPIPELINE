@@ -4,11 +4,9 @@ EZPIPELINE reads configuration from two places: `ezpipeline.config.json` for
 things that are not secret, and a `.env` at the repository root for things
 that are.
 
-The most useful thing this page can tell you is which knobs are real. Several
-settings that appear in older documentation, and one that appears in the
-config file itself, are not read by any code. They are listed in
-[Settings that do nothing](#settings-that-do-nothing) so you do not spend an
-afternoon on one.
+Every setting on this page is read by the server. Names from older versions
+that are no longer read, and what replaced them, are in
+[Older names](#older-names).
 
 ---
 
@@ -19,10 +17,9 @@ walks four directories up from itself to find it.
 
 ```json
 {
-  "ports":  { "client": 5000, "server": 5001 },
+  "ports":  { "client": 5173, "server": 5001 },
   "paths":  { "data": "apps/server/data",
-              "logs": "apps/server/logs",
-              "sandbox": "apps/server/ai_sandbox" },
+              "logs": "apps/server/logs" },
   "auth":   { "required": true,
               "defaultUser": { "username": "admin", "isAdmin": true } },
   "email":  { "enabled": false, "host": "", "port": 587, "secure": false,
@@ -31,27 +28,25 @@ walks four directories up from itself to find it.
 ```
 
 The merge is shallow apart from `auth` and `email`, which are merged one level
-deep. Anything you omit falls back to the built-in defaults, and those defaults
-are **not** the same as the values shipped in the file: the code defaults the
-client to 5173, the file says 5000. The file wins.
+deep. Anything you omit falls back to the built-in defaults, which are the
+values shown here.
 
 ### `ports`
 
 | Key | Shipped | What reads it |
 |---|---|---|
 | `server` | 5001 | The server, unless `PORT` is set |
-| `client` | 5000 | Vite's dev server port, and the API URL compiled into the dev client |
+| `client` | 5173 | Vite's dev server port in development |
 
 The client port is not just a dev server setting. `vite.config.ts` also injects
 the **server** port into the browser bundle at build time through a `define`,
 because in development the browser calls `http://localhost:<server port>`
 directly rather than going through a proxy.
 
-The consequence is worth stating plainly: if `ezpipeline.config.json` and your
-environment disagree about the server port, the server listens on one and the
-browser calls the other. Everything looks healthy, and every request fails in
-the browser console only. `scripts/docker.mjs` refuses to start the stack when
-it detects this, which is the only place anything checks.
+So set the server port in `ezpipeline.config.json` rather than with `PORT`
+when you run the dev client against it: the dev client is built with the port
+from the file. `scripts/docker.mjs` refuses to start the stack when the two
+disagree. A production build calls its own origin and is unaffected.
 
 ### `paths`
 
@@ -60,26 +55,14 @@ as-is.
 
 | Key | What it actually controls |
 |---|---|
-| `data` | `data/pipelines`, `data/plugins`, `data/global`, `data/.env.global`. **Not the database** |
+| `data` | Everything the server keeps: `app.db`, `pipelines/`, `plugins/`, `global/`, `.env.global` |
 | `logs` | Where Winston writes `app.log` |
-| `sandbox` | The old AI sandbox directory. Nothing loads it since the assistant moved to the Anthropic API |
 
-#### The data path does not move the database
+`EZP_DATA_DIR` and `EZP_LOGS_DIR`, when set, win over both. The desktop app
+uses them to keep its data in the system's app-data folder.
 
-`config/index.ts` exports `DB_PATH` as `<data>/app.db`, and **nothing imports
-it**. `services/Database.ts` computes its own path instead:
-
-```ts
-const dbPath = path.resolve(__dirname, "../../data/app.db");
-```
-
-That is `apps/server/data/app.db`, always. Point `paths.data` at
-`/var/lib/ezpipeline` and your pipelines and plugins move there while the
-database stays behind, which looks like data loss and is not.
-
-This is a bug in `apps/server/src/services/Database.ts`, reported but not
-fixed by this documentation pass. Until it is fixed, treat the database
-location as fixed.
+Moving `paths.data` moves the database with everything else. Move the folder's
+contents across before you point the setting at a new place.
 
 ### `auth`
 
@@ -118,7 +101,14 @@ latter. A file there is not read.
 | Variable | Default | What it does |
 |---|---|---|
 | `PORT` | `ports.server` | The port the server listens on. Wins over the config file |
-| `JWT_SECRET` | see below | Signs login tokens |
+| `JWT_SECRET` | none outside development | Signs sign-in tokens. See below |
+| `NODE_ENV` | unset | `development` or `test` allows the built-in development JWT secret |
+| `EZP_DATA_DIR` | `paths.data` | Where everything the server keeps lives, the database included |
+| `EZP_LOGS_DIR` | `paths.logs` | Where `app.log` is written |
+| `EZP_HOST` | all interfaces | The address to bind. The desktop app sets `127.0.0.1` |
+| `EZP_SETUP_TOKEN` | unset | Set by the self-host wizard on the instance it deploys: shuts the first-admin page and lets that instance take one hand-over. See [Self-hosting](self-hosting.md#the-hand-over) |
+| `EZP_SELFHOST_IMAGE` | `api.filefreak.io/ezpipeline/ezpipeline` | The image repository the self-host wizard deploys, without a tag; the running version is the tag |
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info` or `debug`, for the console and `app.log`. Build output is unaffected |
 | `ANTHROPIC_API_KEY` | unset | Enables the AI assistant |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | Model the assistant uses |
 | `SMTP_ENABLED` | `email.enabled` | `true` to send mail |
@@ -129,39 +119,26 @@ latter. A file there is not read.
 | `SMTP_PASS` | `email.auth.pass` | |
 | `SMTP_FROM` | `email.from` | |
 
-That is the complete list. It was produced by grepping `process.env` across
-`apps/server/src`, not by copying a previous page.
+The desktop app also sets `EZP_DESKTOP_TOKEN`, `EZP_SUPERVISED` and
+`EZP_VERSION` for the server it starts. You do not set those yourself.
 
-`NODE_ENV` is **not** on it. The only place the server reads it is
-`ClaudeManager.ts`, which nothing imports any more since the assistant moved to
-the Anthropic API. Docker sets it, and setting it is still worth doing because
-`npm ci` behaves differently under it, but no EZPIPELINE code branches on it
-today. The client's production build is selected by Vite's own
-`import.meta.env.PROD`, which is decided at build time and is unrelated.
+This list was produced by searching `apps/server/src` for `process.env`.
 
 #### `JWT_SECRET`
 
-```ts
-const SECRET = process.env.JWT_SECRET || "ezpipeline-secret-key";
-```
-
-Two files do this: `middleware/auth.ts` and `routes/index.ts`.
-
-If `JWT_SECRET` is unset, tokens are signed with a string that is committed to
-this repository. Anyone who knows it can mint a token claiming
-`{"id": 1, "isAdmin": true}` and the server will accept it, because the
-middleware verifies the signature and then re-reads user 1 from the database.
-That is not a theoretical attack; it is how this documentation verified the
-authenticated endpoints on a development instance.
-
-The server does not warn when the fallback is in use. **Set it.**
+Sign-in tokens are signed with it. Outside development the server will not
+start without one: an unset value, the placeholder older versions used, or one
+shorter than 32 characters stops it with a message saying what to do.
 
 ```bash
 JWT_SECRET=$(openssl rand -hex 32)
 ```
 
-Changing it invalidates every outstanding token, which is the correct
-behaviour and means everyone logs in again.
+With `NODE_ENV=development` (or `test`) and no `JWT_SECRET`, the server uses a
+fixed development secret so a local checkout runs without setup. Never deploy
+with `NODE_ENV=development`.
+
+Changing the secret signs everyone out, which is the right behaviour.
 
 #### `ANTHROPIC_API_KEY`
 
@@ -174,23 +151,18 @@ There is deliberately no field in the interface for it. See
 
 ---
 
-## Settings that do nothing
+## Older names
 
-Every one of these appeared in a previous version of the documentation as a
-working option. None are read by any code in `apps/server/src`.
+Earlier versions and their documentation used these. None is read now; the
+right-hand column is what to use instead.
 
-| Setting | What it claimed | Reality |
-|---|---|---|
-| `DATABASE_PATH` | Moves the SQLite file | Not read anywhere. The path is hardcoded |
-| `LOG_LEVEL` | Sets Winston's verbosity | Not read. The level is hardcoded to `info` in `Logger.ts` |
-| `LOG_FILE` | Names the log file | Not read. Always `<paths.logs>/app.log` |
-| `CLAUDE_API_KEY` | Enabled the AI features | Never existed. The variable is `ANTHROPIC_API_KEY` |
-| `paths.sandbox` | The AI working directory | Nothing loads it since the engine changed |
-| `pipeline.yaml`'s `env:` field | Names the environment file | Not read. The file is found by convention |
-
-To change the log level today you edit `apps/server/src/controllers/Logger.ts`.
-There is no `apps/server/src/config/logger.ts`, whatever the troubleshooting
-page used to say.
+| Older name | Use instead |
+|---|---|
+| `DATABASE_PATH` | `EZP_DATA_DIR` or `paths.data`. The database is `app.db` in the data folder |
+| `LOG_FILE` | `EZP_LOGS_DIR` or `paths.logs`. The file is always `app.log` |
+| `CLAUDE_API_KEY` | `ANTHROPIC_API_KEY` |
+| `paths.sandbox` | Nothing. The assistant calls the Anthropic API and has no working folder |
+| `env:` in `pipeline.yaml` | Nothing. The pipeline's `.env` is found by name, and the editor flags the field as unused |
 
 ---
 
@@ -209,22 +181,18 @@ Each pipeline is a directory under `<data>/pipelines`:
 ```
 
 Environment variables come from `.env` in that directory, found **by name**.
-If there is no `.env`, the loader tries `.env.<pipeline id>`. The `env:` field
-in the YAML is not consulted. See
-[Pipeline schema](pipeline-schema.md#env-does-not-do-what-it-says).
-
-One thing to be aware of: loading a pipeline's `.env` assigns each key onto the
-server's own `process.env`, so the values persist after the build and leak into
-the next pipeline that runs. Reported as a bug in `EZPipelineController.run()`.
+If there is no `.env`, the loader tries `.env.<pipeline id>`. There is no field
+for it in the YAML. Each run reads the file afresh, and its variables reach only
+that pipeline's steps. See
+[Pipeline schema](pipeline-schema.md#environment-variable-precedence).
 
 ---
 
 ## Global environment
 
 `<data>/.env.global`, managed under Settings or through `/api/global-env`.
-Loaded once when the server starts, so a change made through the API takes
-effect for new builds without a restart, while a change made by editing the
-file directly does not.
+It is read at the start of every run, so a change takes effect on the next
+run, whether it was made in the app or by editing the file.
 
 Access is by permission on the literal target `global-env`: `view` lists key
 names, `editEnv` reveals values and permits writes. See
@@ -235,13 +203,15 @@ names, `editEnv` reveals values and permits writes. See
 ## Logging
 
 Winston, one console transport and one file transport at
-`<paths.logs>/app.log`. The level is `info` and is not configurable without
-editing the source.
+`<paths.logs>/app.log`. The level is `info` unless `LOG_LEVEL` says otherwise.
 
-Values loaded from any pipeline `.env` are registered with a redactor, and any
-log line containing one of them has it replaced with `[REDACTED]` before it is
-written or streamed. Strings shorter than three characters are ignored, to
-avoid turning every log line into noise.
+Values from the env files (global, group and pipeline) are hidden in logs
+when the variable's name looks secret (it contains `SECRET`, `PASSWORD`,
+`TOKEN`, `_KEY`, `API_KEY`, `CREDENTIAL`, `PRIVATE`, `SESSION`, `SALT` or
+`CERT`, or is a `PAT`) or the line is marked `# @secret`, and the value is
+8 characters or longer. Any log line containing one has it replaced with
+`[REDACTED]` before it is written or streamed. Values such as a branch name
+are left alone, so a log still says which branch failed to clone.
 
 This is a substring match, not a parser. It catches a secret echoed into an
 error message, which is the common case. It will not catch one that a command

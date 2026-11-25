@@ -5,8 +5,7 @@
     },
     "paths": {
         "data": "apps/server/data",
-        "logs": "apps/server/logs",
-        "sandbox": "apps/server/ai_sandbox"
+        "logs": "apps/server/logs"
     },
     "auth": {
         "required": true,

@@ -15,7 +15,45 @@ export interface GranularPermission {
 
 export type PermissionType = 'view' | 'run' | 'editYaml' | 'editEnv' | 'viewResources' | 'useClaude' | 'useTerminal';
 
+/** "A/B/C" → ["A/B/C", "A/B", "A"]. */
+const ancestors = (g: string) => {
+    const parts = g.split("/").filter(Boolean);
+    return parts.map((_, i) => parts.slice(0, parts.length - i).join("/"));
+};
+
+/**
+ * The grant that decides for a target, most specific first:
+ *   1. one on the pipeline itself ("pipeline:<id>" or the bare id),
+ *   2. one on its group, then each group above it ("group:<path>" or the bare path),
+ *   3. the wildcard "*".
+ * A pipeline grant overrides its group's, so a group can give its members a
+ * default and one pipeline can still be locked down or opened up.
+ * `groupOf` names a pipeline's group; for a target that is a group, the
+ * groups above it are tried after the group itself.
+ */
+export function resolveGrant(perms: GranularPermission[], target: string, groupOf: (t: string) => string | null): GranularPermission | null {
+    const t = target.toLowerCase();
+    const by = (names: string[]) => {
+        for (const n of names) {
+            const hit = perms.find((p) => p.target.toLowerCase() === n);
+            if (hit) return hit;
+        }
+        return null;
+    };
+    const exact = by([`pipeline:${t}`, t, `group:${t}`]);
+    if (exact) return exact;
+    const g = groupOf(target);
+    const chain = g ? ancestors(g) : ancestors(target).slice(1);
+    for (const a of chain) {
+        const hit = by([`group:${a.toLowerCase()}`, a.toLowerCase()]);
+        if (hit) return hit;
+    }
+    return perms.find((p) => p.target === "*") ?? null;
+}
+
 export class PermissionsService {
+    /** Set at startup (services/access.ts): which group a pipeline is filed in. */
+    public static groupOf: (target: string) => string | null = () => null;
     private static instance: PermissionsService;
     private db = DatabaseService.getInstance();
     private logger = Logger.getInstance();
@@ -104,24 +142,7 @@ export class PermissionsService {
         if (!AUTH_CONFIG.required) return true;
         if (this.isAdmin(userId)) return true;
 
-        const perms = this.getUserPermissions(userId);
-        let bestMatch: GranularPermission | null = null;
-
-        // 1. Exact match (prefixed 'pipeline:' or raw target) - Case Insensitive
-        const targetLower = target.toLowerCase();
-        const exactMatch = perms.find(p => {
-            const pTarget = p.target.toLowerCase();
-            return pTarget === `pipeline:${targetLower}` || pTarget === targetLower;
-        });
-
-        if (exactMatch) {
-            bestMatch = exactMatch;
-        } else {
-            // 2. Wildcard
-            const wildcard = perms.find(p => p.target === "*");
-            if (wildcard) bestMatch = wildcard;
-        }
-
+        const bestMatch = resolveGrant(this.getUserPermissions(userId), target, PermissionsService.groupOf);
         if (!bestMatch) return false;
 
         switch (permission) {

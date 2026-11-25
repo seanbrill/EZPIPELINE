@@ -195,6 +195,16 @@ apps/server/data/global/*
 apps/server/data/pipelines/*
 !apps/server/data/pipelines/.gitkeep
 !apps/server/data/pipelines/Demo/
+# The Demo pipeline's YAML is source; what running it leaves behind is not.
+apps/server/data/pipelines/Demo/build-history/
+apps/server/data/pipelines/Demo/workspace/
+# Runtime data the v2 server makes: export bundles (sealed, but somebody's pipelines and
+# secrets), bundles uploaded for import, and self-host drafts, whose tf/ folder holds the new
+# instance's JWT secret and setup token.
+apps/server/data/exports/
+apps/server/data/imports/
+apps/server/data/selfhost/
+apps/server/data/tmp_uploads/
 # The live database. app.db is a populated SQLite file holding the admin
 # account and its password hash - it is runtime state, not source, and this
 # repo has a public remote.
@@ -236,3 +246,10 @@ apps/server/public/*
 # Debris from hand-testing the login route. Only ever an error body, but
 # there is no reason for a response dump to be in the repository.
 login_response*.json
+
+# Bare, blob-less clones the server keeps to read commit details (services/CommitService.ts).
+apps/server/data/git-cache/
+
+# Desktop app (apps/desktop): the staged server and the installers it builds
+apps/desktop/stage/
+apps/desktop/dist/

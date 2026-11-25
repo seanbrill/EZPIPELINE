@@ -214,9 +214,6 @@ services:
       # Same named volume as the dev server, so a pipeline you configured in
       # one is there in the other.
       - ezpipeline_data:/app/apps/server/data
-      # Build artifacts land on the host, where you can open them. This is the
-      # one mount the previous version of this file had, kept.
-      - ./apps/server/pipeline_workspace/PIPELINE_OUTPUT:/app/apps/server/pipeline_workspace/PIPELINE_OUTPUT
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 

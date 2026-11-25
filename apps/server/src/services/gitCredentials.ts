@@ -338,6 +338,9 @@ export async function generateSshCredential(input: {
 // the store is that the clone, which runs on every commit, should never hold
 // something that can change the repository.
 
+/** Where a key every pipeline reads with is stored. Only an admin may manage it. */
+export const INSTANCE_GROUP = "*";
+
 /** A group and the groups it sits inside, nearest first: "A/B/C" gives A/B/C, A/B, A. */
 export function groupAndAncestors(group: string): string[] {
   const parts = group.split(/[\\/]+/).filter(Boolean);
@@ -379,7 +382,8 @@ export function readCredentialForGroup(group: string): GitCredentialRow | null {
   const find = db.prepare(
     `SELECT * FROM git_credentials WHERE group_path = ? AND kind = 'ssh_key' AND use_for_reads = 1`
   );
-  for (const g of groupAndAncestors(group)) {
+  // Then the instance-wide key ("*"), made in setup before any group existed.
+  for (const g of [...groupAndAncestors(group), INSTANCE_GROUP]) {
     const rows = find.all(g) as GitCredentialRow[];
     if (rows.length > 0) return rankForReading(rows)[0] ?? null;
   }
@@ -475,9 +479,8 @@ export interface ReadAccess {
  */
 export function readAccessForGroup(group: string | null | undefined): ReadAccess {
   const none: ReadAccess = { command: null, credential: null, problem: null };
-  if (!group) return none;
   try {
-    const cred = readCredentialForGroup(group);
+    const cred = readCredentialForGroup(group || INSTANCE_GROUP);
     if (!cred) return none;
     const named = { name: cred.name, group: cred.group_path };
     const file = readKeyFile(cred);

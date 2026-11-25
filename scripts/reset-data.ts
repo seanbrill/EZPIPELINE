@@ -11,7 +11,6 @@ let flags = {
     Pipelines: args.includes('--pipelines'),
     Plugins: args.includes('--plugins'), // Added Plugins
     Logs: args.includes('--logs'),
-    Claude: args.includes('--claude'),
     Users: args.includes('--users'), // Database
     Cache: args.includes('--cache'),
     SmartReset: args.includes('--smart') || false, // Explicit flag or internal
@@ -29,11 +28,10 @@ async function promptUser(): Promise<typeof flags> {
         output: process.stdout
     });
 
-    console.log('\n🔧 No flags provided. Default Behavior: Deep Clean Everything (Preserve Pipeline Configs)');
-    console.log('Use Smart Reset by default or choose specific option:\n');
+    console.log('\n🔧 What should be reset? Nothing happens until you choose.\n');
 
-    console.log('1. Smart Reset (Recommended)');
-    console.log('   Runs: Users, DB, Plugins, Claude, Logs, Build History');
+    console.log('1. Smart Reset');
+    console.log('   Runs: Users, DB, Plugins, Logs, Build History');
     console.log('   Preserves: Pipeline Configs (YAML, Resources, ENV)');
     console.log('');
     console.log('2. Factory Reset (NUKE EVERYTHING)');
@@ -44,23 +42,21 @@ async function promptUser(): Promise<typeof flags> {
     console.log('4. Reset Logs Only');
     console.log('5. Reset Users/Database Only');
     console.log('6. Reset Plugins Only');
-    console.log('7. Reset Claude Directory Only');
-    console.log('8. Reset NPM Cache Only');
-    console.log('9. Cancel');
+    console.log('7. Reset NPM Cache Only');
+    console.log('8. Cancel');
 
     return new Promise((resolve) => {
-        rl.question('\nSelect an option (default: 1): ', (answer) => {
+        rl.question('\nSelect an option (Enter cancels): ', (answer) => {
             rl.close();
             const choice = answer.trim();
             const newFlags = { ...flags };
 
-            // Default to 1
-            if (choice === '' || choice === '1') {
+            // Enter cancels: this deletes accounts, so it takes a choice.
+            if (choice === '1') {
                 newFlags.SmartReset = true;
                 // Enable sub-flags for clarity in execution
                 newFlags.Users = true;
                 newFlags.Plugins = true;
-                newFlags.Claude = true;
                 newFlags.Logs = true;
             } else {
                 switch (choice) {
@@ -72,9 +68,8 @@ async function promptUser(): Promise<typeof flags> {
                     case '4': newFlags.Logs = true; break;
                     case '5': newFlags.Users = true; break;
                     case '6': newFlags.Plugins = true; break;
-                    case '7': newFlags.Claude = true; break;
-                    case '8': newFlags.Cache = true; break;
-                    case '9':
+                    case '7': newFlags.Cache = true; break;
+                    case '8':
                     default:
                         console.log('❌ Cancelled.');
                         process.exit(0);
@@ -91,14 +86,20 @@ async function promptUser(): Promise<typeof flags> {
     if (flags.Menu) {
         flags = await promptUser();
     } else if (args.length === 0) {
-        console.log("🚀 No flags provided. Defaulting to Smart Reset...");
-        console.log("   (Use 'npm run reset -- --menu' to see options)");
-
-        flags.SmartReset = true;
-        // Enable sub-flags
+        // No flags used to mean a Smart Reset, which deletes every account,
+        // with no question asked. Now it asks, and without a terminal to ask
+        // in it does nothing.
+        if (!process.stdin.isTTY) {
+            console.log("Nothing was reset. Say what to reset, for example:");
+            console.log("   npm run reset -- --smart      users, database, plugins, logs, build history");
+            console.log("   npm run reset -- --logs");
+            console.log("   npm run reset -- --menu");
+            process.exit(1);
+        }
+        flags = await promptUser();
+    } else if (flags.SmartReset) {
         flags.Users = true;
         flags.Plugins = true;
-        flags.Claude = true;
         flags.Logs = true;
     }
 
@@ -106,13 +107,19 @@ async function promptUser(): Promise<typeof flags> {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     const rootDir = path.resolve(__dirname, '..');
+    // The same folders the server uses: EZP_DATA_DIR / EZP_LOGS_DIR, else
+    // paths.data / paths.logs in ezpipeline.config.json.
+    let configured: { data?: string; logs?: string } = {};
+    try { configured = JSON.parse(fs.readFileSync(path.join(rootDir, 'ezpipeline.config.json'), 'utf8')).paths ?? {}; } catch { /* defaults */ }
+    const dataDir = path.resolve(rootDir, process.env.EZP_DATA_DIR || configured.data || 'apps/server/data');
+    const logsDir = path.resolve(rootDir, process.env.EZP_LOGS_DIR || configured.logs || 'apps/server/logs');
     const paths = {
-        pipelines: path.join(rootDir, 'apps/server/data/pipelines'),
-        plugins: path.join(rootDir, 'apps/server/data/plugins'),
-        logs: path.join(rootDir, 'apps/server/logs'),
-        sandbox: path.join(rootDir, 'apps/server/ai_sandbox'),
-        db: path.join(rootDir, 'apps/server/data/app.db')
+        pipelines: path.join(dataDir, 'pipelines'),
+        plugins: path.join(dataDir, 'plugins'),
+        logs: logsDir,
+        db: path.join(dataDir, 'app.db')
     };
+    console.log(`📁 Data: ${dataDir}`);
 
     console.log('🗑️  Starting Reset...');
 
@@ -136,48 +143,25 @@ async function promptUser(): Promise<typeof flags> {
         if (fs.existsSync(paths.pipelines)) {
             console.log('🧹 Smart Cleaning Pipelines (Builds & History)...');
             try {
-                // Iterate through first level (Groups) or direct legacy folders
-                // EZPipeline structure: data/pipelines/<Group>/<Target> OR data/pipelines/<Target> (Legacy)
-                // We'll walk recursively-ish or just handle 2 levels.
-
-                const processPipelineDir = (pDir: string) => {
-                    const builds = path.join(pDir, 'builds');
-                    const history = path.join(pDir, 'build-history');
-                    // versions? If requested. User said "reset versions".
-                    // Assuming versions are stored in 'versions' dir or tracked in DB.
-                    // If file-based versions exist:
-                    const versions = path.join(pDir, 'versions');
-
-                    [builds, history, versions].forEach(d => {
-                        if (fs.existsSync(d)) {
-                            fs.rmSync(d, { recursive: true, force: true });
-                            console.log(`   - Cleared ${path.basename(d)} in ${path.basename(pDir)}`);
-                        }
-                    });
-                };
-
-                const groups = fs.readdirSync(paths.pipelines);
-                for (const group of groups) {
-                    const groupPath = path.join(paths.pipelines, group);
-                    if (fs.statSync(groupPath).isDirectory()) {
-                        // Check if this IS a pipeline (Legacy) or a Group
-                        // Heuristic: If it has 'workspace' or '.pipeline' it's a pipeline.
-                        // Or if it contains subdirectories that are pipelines.
-                        // Simpler: Just clean any 'builds'/'build-history' found in deep traversal? 
-                        // Let's assume 2 levels max + legacy root.
-
-                        processPipelineDir(groupPath); // Treat as pipeline (Legacy)
-
-                        // Check children (Groups)
-                        const children = fs.readdirSync(groupPath);
-                        for (const child of children) {
-                            const childPath = path.join(groupPath, child);
-                            if (fs.statSync(childPath).isDirectory()) {
-                                processPipelineDir(childPath);
+                // Every folder holding a pipeline.yaml, at any depth: groups nest.
+                const walk = (dir: string) => {
+                    if (fs.existsSync(path.join(dir, 'pipeline.yaml'))) {
+                        for (const name of ['builds', 'build-history', 'versions']) {
+                            const d = path.join(dir, name);
+                            if (fs.existsSync(d)) {
+                                fs.rmSync(d, { recursive: true, force: true });
+                                console.log(`   - Cleared ${name} in ${path.relative(paths.pipelines, dir)}`);
                             }
                         }
                     }
-                }
+                    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                        // A pipeline's own working folders hold no pipelines.
+                        if (e.isDirectory() && !['workspace', 'resources', 'builds', 'build-history', 'versions'].includes(e.name)) {
+                            walk(path.join(dir, e.name));
+                        }
+                    }
+                };
+                walk(paths.pipelines);
                 console.log('✅ Pipeline History Reset.');
             } catch (e) {
                 console.error(`❌ Failed to smart clean pipelines: ${e}`);
@@ -217,19 +201,6 @@ async function promptUser(): Promise<typeof flags> {
         }
     }
 
-    // 5. Reset AI Sandbox (Claude)
-    if (flags.everything || flags.Claude) {
-        if (fs.existsSync(paths.sandbox)) {
-            console.log('🤖 Resetting AI Sandbox...');
-            try {
-                fs.rmSync(paths.sandbox, { recursive: true, force: true });
-                fs.mkdirSync(paths.sandbox);
-                console.log('✅ AI Sandbox reset.');
-            } catch (e) {
-                console.error(`❌ Failed to reset sandbox: ${e}`);
-            }
-        }
-    }
 
     // 6. Reset Users (Database)
     if (flags.everything || flags.Users) {

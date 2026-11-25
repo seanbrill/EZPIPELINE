@@ -78,8 +78,10 @@ export const EMAIL_CONFIG = {
 // Resolve paths relative to ROOT if they are relative paths
 const resolvePath = (p: string) => path.isAbsolute(p) ? p : path.resolve(ROOT_DIR, p);
 
-export const LOGS_DIR = resolvePath(config.paths.logs);
-export const DATA_DIR = resolvePath(config.paths.data);
+// EZP_LOGS_DIR wins too: an installed app cannot write beside its own code.
+export const LOGS_DIR = process.env.EZP_LOGS_DIR ? path.resolve(process.env.EZP_LOGS_DIR) : resolvePath(config.paths.logs);
+// EZP_DATA_DIR wins: the desktop app keeps its data in the OS's app-data folder.
+export const DATA_DIR = process.env.EZP_DATA_DIR ? path.resolve(process.env.EZP_DATA_DIR) : resolvePath(config.paths.data);
 export const DB_PATH = path.join(DATA_DIR, 'app.db');
 export const PIPELINES_DIR = path.join(DATA_DIR, 'pipelines');
 export const DOCS_DIR = resolvePath(path.join(ROOT_DIR, 'docs'));

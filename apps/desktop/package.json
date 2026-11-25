@@ -1,0 +1,26 @@
+{
+  "name": "ezpipeline-desktop",
+  "productName": "EZPipeline",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted CI/CD: pipelines as YAML, steps as shell commands, logs live.",
+  "author": "EZPipeline contributors",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/seanbrill/EZPIPELINE",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "icons": "node scripts/icons.mjs",
+    "stage": "node scripts/stage.mjs",
+    "dev": "node scripts/launch.mjs",
+    "start": "node scripts/launch.mjs --prod",
+    "smoke": "node scripts/launch.mjs --prod --smoke",
+    "test": "node --test test/*.test.mjs",
+    "pack": "node scripts/stage.mjs && electron-builder --dir",
+    "dist": "node scripts/dist.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  }
+}

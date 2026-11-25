@@ -1,0 +1,16 @@
+{
+  "note": "What each version changed, newest first. The Download page shows it under each version. Add the new version here before releasing it (docs/RELEASING.md).",
+  "entries": [
+    {
+      "version": "2.0.0",
+      "date": "2026-11-16",
+      "notes": [
+        ["A desktop app", "for macOS, Windows and Linux: EZPipeline on your computer, in one window, or a window onto your server."],
+        ["Commits on every run:", "subject, author and diffstat from the moment a watch sees them."],
+        ["Self-host wizard", "for AWS, Azure and Google Cloud, with the Google Cloud CLI plugin."],
+        ["Export and import", "an instance, a group or a single pipeline, with secrets sealed by a passphrase."],
+        ["Command palette:", "press ⌘K to jump to any pipeline, run or setting."]
+      ]
+    }
+  ]
+}

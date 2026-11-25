@@ -51,7 +51,7 @@ images on first run, and starts the stack.
 
 The stack is three services: `init` prepares the writable directories and
 proves `better-sqlite3` loads before anything else starts, then `server` on
-5001 and `client` on 5000.
+5001 and `client` on 5173.
 
 Source is bind-mounted, so editing a file on your machine reloads the service
 inside the container.
@@ -101,11 +101,7 @@ You should see:
 Server running at http://localhost:5001
 ```
 
-and Vite opening a browser at **http://localhost:5000**.
-
-Note the client port. The shipped `ezpipeline.config.json` sets it to `5000`,
-not Vite's usual 5173. Older documentation said 5173 throughout; if a link in
-an old page does not load, try 5000.
+and Vite opening a browser at **http://localhost:5173**.
 
 ---
 
@@ -142,7 +138,7 @@ editing it.
 
 ## Create the first user
 
-1. Open the client, at **http://localhost:5000** by default.
+1. Open the client, at **http://localhost:5173** by default.
 2. You are redirected to `/setup`.
 3. Enter a username and password. An email address is optional here but you
    will need one later if you turn on MFA enforcement.
@@ -210,7 +206,7 @@ means something else. To do it by hand:
 
 ```bash
 lsof -ti:5001 | xargs kill -9
-lsof -ti:5000 | xargs kill -9
+lsof -ti:5173 | xargs kill -9
 ```
 
 Or change the numbers in `ezpipeline.config.json`. Change them there, not in

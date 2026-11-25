@@ -1,0 +1,4 @@
+{
+  "note": "Written by scripts/fetch-releases.mjs from the public release folder on FileFreak, before each build. Empty until the first release goes up: the Download page then says so (design f89).",
+  "releases": []
+}

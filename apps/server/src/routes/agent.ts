@@ -8,30 +8,29 @@ const agentService = AgentService.getInstance();
 const configController = ConfigController.getInstance(); // Reuse config controller logic
 
 // Middleware to validate Agent Token
-const authenticateAgent = async (req: any, res: any, next: any) => {
+/**
+ * Agent tokens carry scopes (yaml:read, yaml:write) and they are now checked:
+ * every token used to be able to write whatever its scopes said.
+ */
+const requireScope = (scope: string) => async (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return res.status(401).json({ error: "Missing or invalid Authorization header" });
     }
-
     const token = authHeader.split(" ")[1];
-    // Check if it's an agent token
-    const isValid = await agentService.validateToken(token);
-    if (!isValid) {
+    if (!(await agentService.validateToken(token))) {
         return res.status(403).json({ error: "Invalid or expired Agent Token" });
     }
-
-    // Attach agent info if needed, but validateToken updates usage.
+    if (!(await agentService.validateToken(token, scope))) {
+        return res.status(403).json({ error: `This token does not have the ${scope} scope.` });
+    }
     next();
 };
-
-// Agent Configuration Endpoints
-router.use(authenticateAgent);
 
 // Authentication is handled by authenticateAgent middleware defined above
 
 // GET /agent/config
-router.get("/config", (req, res) => {
+router.get("/config", requireScope("yaml:read"), (req, res) => {
     const { path } = req.query;
     if (!path || typeof path !== 'string') {
         res.status(400).json({ error: "Path is required" });
@@ -59,7 +58,7 @@ router.get("/config", (req, res) => {
 
 // POST /agent/config
 // Body: path, content
-router.post("/config", (req, res) => {
+router.post("/config", requireScope("yaml:write"), (req, res) => {
     const { path, content } = req.body;
 
     if (!path || !content) {
@@ -82,6 +81,8 @@ router.post("/config", (req, res) => {
         configController.saveFileContent("yaml", path, content);
         res.json({ success: true, message: "Configuration updated" });
     } catch (e: any) {
+        // An agent needs the reason to fix its own YAML.
+        if (e?.status === 400) { res.status(400).json({ error: e.message, problems: e.problems }); return; }
         Logger.getInstance().error("Agent config save failed", e);
         res.status(500).json({ error: "Failed to save config" });
     }

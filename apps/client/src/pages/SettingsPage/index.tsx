@@ -1,101 +1,117 @@
-import React, { useState } from 'react';
-import { Settings, Key, FileText, Users, Network, Database, Menu, UserCircle } from 'lucide-react';
+/**
+ * Settings (design sheet f21–f28, f145–f148). Personal things anyone has;
+ * the instance's things for admins. One URL per section, so a link or the
+ * back button lands where you were. On a phone, /settings is the list (f27)
+ * and each section is its own page.
+ */
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from 'react';
+import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
+import { ChevronLeft, Database, FileText, KeyRound, Palette, Plug, Server, Settings2, UserCircle, Variable } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
+import { useIsPhone } from '../../hooks/useMediaQuery';
+import { usePageChrome } from '../../components/shell/chrome';
+import { Page, NotFound } from '../../components/shell/states';
+import { NavList, PageHead, SplitLayout, SubNav, type NavGroup } from '../../components/settings/kit';
+import { EnvPanel } from '../../components/pipeline/EnvPanel';
+import { ResourcesPanel } from '../../components/pipeline/ResourcesPanel';
+import { Skeleton } from '../../components/ui/Feedback';
+import { api } from '../../lib/api';
+import { installsSnapshot, subscribeInstalls } from '../../lib/pluginInstall';
 
-import MyAccountTab from './tabs/MyAccountTab';
-import GeneralTab from './tabs/GeneralTab';
-import EnvironmentTab from './tabs/EnvironmentTab';
-import ResourcesTab from './tabs/ResourcesTab';
-import UsersTab from './tabs/UsersTab';
-import PluginsTab from './tabs/PluginsTab';
-import SystemTab from './tabs/SystemTab';
+const Account = lazy(() => import('./Account'));
+const Appearance = lazy(() => import('./Appearance'));
+const Tokens = lazy(() => import('./Tokens'));
+const General = lazy(() => import('./General'));
+const Plugins = lazy(() => import('./Plugins'));
+const Data = lazy(() => import('./Data'));
+const SelfHosting = lazy(() => import('./SelfHosting'));
 
-import { useSearchParams } from 'react-router-dom';
+const LEGACY: Record<string, string> = { account: 'account', general: 'general', env: 'environment', resources: 'resources', plugins: 'plugins', users: '/admin/users', system: '/admin/health' };
+const TITLES: Record<string, string> = { account: 'Account', appearance: 'Appearance', tokens: 'API tokens', general: 'General', environment: 'Environment', resources: 'Resources', plugins: 'Plugins', data: 'Data', 'self-hosting': 'Self-hosting' };
+const ADMIN_ONLY = new Set(['general', 'environment', 'resources', 'data', 'self-hosting']);
 
-const SettingsPage: React.FC = () => {
-    const { isAdmin } = useAuth();
-    const [searchParams, setSearchParams] = useSearchParams();
-    const activeTab = (searchParams.get('tab') as 'account' | 'general' | 'env' | 'resources' | 'users' | 'plugins' | 'system') || 'account';
-    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+export default function SettingsPage() {
+  const { section } = useParams();
+  const { search } = useLocation();
+  const phone = useIsPhone();
+  const { isAdmin } = useAuth();
+  const { theme } = useTheme();
+  const installs = useSyncExternalStore(subscribeInstalls, installsSnapshot);
+  const installing = installs.filter((i) => i.state === 'installing' || i.state === 'queued').length;
+  const [tokens, setTokens] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    api<{ tokens: unknown[] }>('/me/tokens').then((r) => { if (live) setTokens(r.tokens.length); }).catch(() => {});
+    return () => { live = false; };
+  }, [section]);
 
-    const tabs = [
-        { id: 'account', label: 'My Account', icon: UserCircle, adminOnly: false },
-        { id: 'general', label: 'General', icon: Settings, adminOnly: false },
-        { id: 'env', label: 'Environment', icon: Key, adminOnly: false },
-        { id: 'resources', label: 'Resources', icon: FileText, adminOnly: false },
-        { id: 'plugins', label: 'Plugins', icon: Network, adminOnly: false },
-        { id: 'users', label: 'Users', icon: Users, adminOnly: true },
-        { id: 'system', label: 'System', icon: Database, adminOnly: true },
-    ];
+  const current = section ?? (phone ? '' : 'account');
+  usePageChrome(current ? [{ label: 'Settings', to: '/settings' }, { label: TITLES[current] ?? 'Settings' }] : [{ label: 'Settings' }]);
 
-    const CurrentTab = () => {
-        switch (activeTab) {
-            case 'account': return <MyAccountTab />;
-            case 'general': return <GeneralTab />;
-            case 'env': return <EnvironmentTab />;
-            case 'resources': return <ResourcesTab />;
-            case 'plugins': return <PluginsTab />;
-            case 'users': return <UsersTab />;
-            case 'system': return <SystemTab />;
-            default: return <MyAccountTab />;
-        }
-    };
+  // Old links: /settings?tab=users and friends.
+  const legacy = new URLSearchParams(search).get('tab');
+  if (legacy && LEGACY[legacy]) {
+    const to = LEGACY[legacy];
+    return <Navigate to={to.startsWith('/') ? to : `/settings/${to}`} replace />;
+  }
 
-    const handleTabClick = (id: string) => {
-        setSearchParams({ tab: id });
-        setMobileMenuOpen(false);
-    };
+  const groups: NavGroup[] = [
+    { label: 'Personal', items: [
+      { id: 'account', label: 'Account', icon: <UserCircle /> },
+      { id: 'appearance', label: 'Appearance', icon: <Palette />, value: theme[0].toUpperCase() + theme.slice(1) },
+      { id: 'tokens', label: 'API tokens', icon: <KeyRound />, count: tokens || undefined, value: tokens ? String(tokens) : undefined },
+    ] },
+  ];
+  if (isAdmin) groups.push({ label: phone ? 'Instance · admins' : 'Instance', items: [
+    { id: 'general', label: 'General', icon: <Settings2 /> },
+    { id: 'environment', label: 'Environment', icon: <Variable /> },
+    { id: 'resources', label: 'Resources', icon: <FileText /> },
+    { id: 'plugins', label: 'Plugins', icon: <Plug />, dot: installing > 0, value: installing ? `${installing} installing` : undefined },
+    { id: 'data', label: 'Data', icon: <Database /> },
+    { id: 'self-hosting', label: 'Self-hosting', icon: <Server /> },
+  ] });
+  else groups[0].items.push({ id: 'plugins', label: 'Plugins', icon: <Plug /> });
 
-    return (
-        <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)] p-4 md:p-8">
-            <div className="max-w-7xl mx-auto">
-                <div className="flex flex-col md:flex-row gap-8">
-                    {/* Sidebar Navigation */}
-                    <aside className="w-full md:w-64 shrink-0 space-y-4">
-                        <div className="flex items-center justify-between md:block">
-                            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-                                Settings
-                            </h1>
-                            <button
-                                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                                className="md:hidden p-2 text-slate-400 hover:text-white"
-                            >
-                                <Menu className="w-6 h-6" />
-                            </button>
-                        </div>
+  if (!current) return <Page><h1 className="mb-5 text-[24px] font-semibold">Settings</h1><NavList base="/settings" groups={groups} /></Page>;
+  if (!TITLES[current]) return <NotFound />;
+  if (ADMIN_ONLY.has(current) && !isAdmin) return <Navigate to="/settings/account" replace />;
 
-                        <nav className={`flex flex-col gap-1 transition-all ${mobileMenuOpen ? 'block' : 'hidden md:flex'}`}>
-                            {tabs.map((tab) => {
-                                if (tab.adminOnly && !isAdmin) return null;
-                                const isActive = activeTab === tab.id;
-                                const Icon = tab.icon;
-                                return (
-                                    <button
-                                        key={tab.id}
-                                        onClick={() => handleTabClick(tab.id)}
-                                        className={`flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-all ${isActive
-                                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-lg shadow-emerald-900/10'
-                                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 hover:pl-5'
-                                            }`}
-                                    >
-                                        <Icon className={`w-5 h-5 ${isActive ? 'text-emerald-500' : 'text-slate-500'}`} />
-                                        {tab.label}
-                                    </button>
-                                );
-                            })}
-                        </nav>
-                    </aside>
+  return (
+    <Page>
+      {phone && <Link to="/settings" className="-mt-1 mb-3 inline-flex items-center gap-1 text-[14px] text-fg-2"><ChevronLeft className="size-4" />Settings</Link>}
+      <SplitLayout nav={<SubNav base="/settings" groups={groups} current={current} />}>
+        <Suspense fallback={<div className="flex flex-col gap-3"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full" /></div>}>
+          <Section id={current} />
+        </Suspense>
+      </SplitLayout>
+    </Page>
+  );
+}
 
-                    {/* Main Content Area */}
-                    <main className="flex-1 min-w-0">
-                        <div className="bg-[var(--color-surface)]/50 backdrop-blur-sm rounded-none md:rounded-2xl border-none md:border border-slate-700/50 p-0 md:p-1 min-h-[600px]">
-                            <CurrentTab />
-                        </div>
-                    </main>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-export default SettingsPage;
+function Section({ id }: { id: string }) {
+  switch (id) {
+    case 'account': return <Account />;
+    case 'appearance': return <Appearance />;
+    case 'tokens': return <Tokens />;
+    case 'general': return <General />;
+    case 'plugins': return <Plugins />;
+    case 'environment':
+      return (
+        <>
+          <PageHead title="Environment" lede="Variables every pipeline on this instance gets. A group or pipeline value with the same key wins." />
+          <EnvPanel scope={{ global: true }} />
+        </>
+      );
+    case 'resources':
+      return (
+        <>
+          <PageHead title="Resources" lede={<>Files every run gets in <code className="font-mono text-[13px]">$RESOURCES</code>. A group or pipeline file with the same name wins.</>} />
+          <ResourcesPanel scope={{ global: true }} />
+        </>
+      );
+    case 'data': return <Data />;
+    case 'self-hosting': return <SelfHosting />;
+    default: return null;
+  }
+}

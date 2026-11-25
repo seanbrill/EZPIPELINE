@@ -6,8 +6,8 @@ pipeline's YAML means editing shell commands that run on the server, so "can
 deploy" and "can rewrite the deploy script" have to be separable. That is why
 there are seven independent flags rather than three access levels.
 
-Read [Where nothing is checked](#where-nothing-is-checked) before you rely on
-this model. Several parts of the API do not consult it at all.
+Every route that reads or changes a pipeline checks the flag its action needs;
+[Which routes check what](#which-routes-check-what) lists them.
 
 ---
 
@@ -62,13 +62,12 @@ content permission, it is a privilege grant.
 terminal routes only ever check this flag against the wildcard target, so it is
 all-or-nothing across the whole instance.
 
-**Use Claude is roughly `editYaml` plus `editEnv` everywhere.** The assistant
-can read and write pipeline YAML, read env keys and set env values, and the
-tools do not filter by the calling user's per-pipeline permissions. It used to
-be worse: under the old Claude Code CLI engine it was effectively shell access
-on the host, because that process ran with `--dangerously-skip-permissions`.
-That is no longer the case. See
-[AI assistant](ai-assistant.md#what-changed-and-why-it-matters).
+**Use Claude lets the assistant act for you, never beyond you.** Each tool
+call is checked against the pipeline it touches: the assistant can read or
+change a pipeline's YAML only where you have `editYaml` and Use Claude, set its
+variables only where you have `editEnv` and Use Claude, and it lists only the
+pipelines and builds you can view. Global variables follow your `global-env`
+permissions. See [AI assistant](ai-assistant.md#what-it-cannot-do).
 
 The code name is `view`, not `read`. An older version of this page listed
 `read` / `can_view`; there is no `read` value in the `PermissionType` union.
@@ -106,15 +105,13 @@ POST /api/users/:id/permissions
 ```
 
 The handler deletes every row for that user inside a transaction and inserts
-what you sent. To revoke one pipeline, send the list without it. There is no
-per-permission delete endpoint, and any client that sends a partial list will
-silently strip everything it left out.
+what you sent, so the list you send is the whole of what they can do. To
+revoke one pipeline, send the list without it. Read the current set first and
+change that, as the People screen does.
 
 Only admins can write permissions, and not against the primary admin.
-
-**Reading is not restricted.** `GET /api/users/:id/permissions` checks only
-that you are logged in, so any user can enumerate any other user's grants.
-Verified against a running server with a non-admin token.
+`GET /api/users/:id/permissions` answers for yourself, or for anyone if you
+are an admin or manage users.
 
 ---
 
@@ -127,7 +124,7 @@ the only protection.
 
 **Data is stripped server-side.** `GET /api/targets` computes the caller's
 flags per pipeline and, for a non-admin without `editYaml`, removes `steps`,
-`env`, `kubernetes` and `filePath` from the object before serialising it. The
+`kubernetes` and `filePath` from the object before serialising it. The
 commands are not hidden in the browser, they never arrive. This is the part of
 the model that is implemented most carefully, and it does work: verified by
 calling `/api/targets` with tokens for two different users.
@@ -137,39 +134,23 @@ the matching flag, and the server checks again on the request.
 
 ---
 
-## Where nothing is checked
+## Which routes check what
 
-The flags above are only as good as the routes that consult them. Roughly a
-third of the API does not. These are the consequential ones, all verified by
-reading the handlers, and the first two also verified over HTTP against a
-running server:
+Each permission is checked against the pipeline the request is about; for a
+build, schedule or version, that is the pipeline it belongs to.
 
-| Route | Who can actually call it |
+| Needs | Routes |
 |---|---|
-| `GET /api/pipelines/:target/versions` | any logged-in user, any pipeline |
-| `GET /api/pipelines/:target/versions/:file/download` | any logged-in user, any pipeline |
-| `DELETE /api/pipelines/:target/versions/:file` | any logged-in user |
-| `POST /api/pipelines/:target/rollback` | any logged-in user. **This runs a pipeline** |
-| `GET /api/users` | any logged-in user, full list with emails |
-| `GET /api/users/:id/permissions` | any logged-in user, any user |
-| `POST /api/agent-tokens` | any logged-in user |
-| `DELETE /api/schedules/:id` | any logged-in user |
-| `PATCH /api/schedules/:id/toggle` | any logged-in user |
-| `POST /api/builds/:id/approve` | any logged-in user |
-| `GET /api/builds/:id/logs` | any logged-in user |
+| `view` | the pipeline, its builds and their logs, its versions, its schedules, its rollback plan |
+| `run` | run, abort, approve, both rollbacks, and adding, removing or pausing a schedule |
+| `editYaml` | reading and saving the YAML, uploading into the pipeline's folder, deleting a version |
+| `editEnv` | reading values from and writing the pipeline's `.env` |
+| `viewResources` | reading files under the pipeline's `resources/` |
+| admin | users' admin flags, agent tokens, global resources, clearing all builds, deleting a single build, settings |
 
-The two schedule routes are the strangest, because an admin check for both
-*was* written. It sits at lines 1501 and 1555 of
-`apps/server/src/routes/index.ts` and never executes, because unguarded
-handlers for the same paths are registered at lines 175 and 185 and Express
-uses the first match.
-
-`viewResources` is the permission that ought to cover artifact download. It
-exists, and `/api/config/content` consults it. The versions routes do not.
-
-All of the above are reported as code changes needed in `apps/`. They are not
-fixed here because the author of this documentation does not own that
-directory.
+`GET /api/users` answers anyone signed in, but only admins and user managers
+see other people's emails. The [API reference](api-reference.md) lists the
+requirement beside every route.
 
 ---
 

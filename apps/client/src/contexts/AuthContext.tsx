@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import API_URL from '../config/api';
+import { SIGNED_OUT } from '../lib/api';
 
 interface AuthContextType {
     user: string | null;
@@ -46,7 +47,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     if (configRes.ok) {
                         const config = await configRes.json();
                         if (!config.required) {
-                            console.log("Auth not required, attempting anonymous login...");
                             const loginRes = await fetch(`${API_URL}/api/auth/anonymous`, { method: 'POST' });
                             const data = await loginRes.json();
                             if (data.token) {
@@ -63,6 +63,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         initAuth();
+    }, []);
+
+    // A sign-in that runs out mid-session: any API call can be the one to find out.
+    useEffect(() => {
+        const out = () => logout();
+        window.addEventListener(SIGNED_OUT, out);
+        return () => window.removeEventListener(SIGNED_OUT, out);
     }, []);
 
     const login = (newToken: string, newUser: string, newIsAdmin: boolean) => {

@@ -1,10 +1,7 @@
 # Pipeline YAML schema
 
-Every field of a `pipeline.yaml`, and whether the runtime actually reads it.
-
-That last column matters more than usual here, because several fields that
-look load-bearing are not. `env:` is the worst of them: it names your
-environment file and the runtime ignores it completely. Details below.
+Every field of a `pipeline.yaml`. Each one listed here is read; anything else
+in the file does nothing, and the editor flags it.
 
 ---
 
@@ -33,69 +30,62 @@ for.
 
 ## Root fields
 
-| Field | Type | Required | Read at runtime | Notes |
-|---|---|---|---|---|
-| `id` | string | yes | yes | UUID. The real identifier everywhere: permissions, API calls, build records |
-| `appName` | string | yes | yes | Display name. Also accepted as a target in `POST /api/run-pipeline` |
-| `version` | string | yes | yes | Names the build artifact, `<version>.zip` |
-| `description` | string | yes | yes | Printed in the build log header |
-| `steps` | `Step[]` | yes | yes | Executed in order |
-| `group` | string | no | partly | See [group](#group) |
-| `environment` | string | no | yes, by the UI | Tag such as `dev`, `prod`, `qa`. Colours the sidebar entry |
-| `requireConfirmation` | boolean | no | **browser only** | See below |
-| `kubernetes` | object | no | yes | See [kubernetes](#kubernetes) |
-| `env` | string | no | **no** | See below. Present in every generated file, read by nothing |
-| `author` | string | no | **no** | Written when a pipeline is created through the UI, never read back |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | string | yes | UUID. The real identifier everywhere: permissions, API calls, build records |
+| `appName` | string | yes | Display name. Also accepted as a target in `POST /api/run-pipeline` |
+| `version` | string | yes | The pipeline's own version, shown with it |
+| `description` | string | yes | Printed in the build log header |
+| `steps` | `Step[]` | yes | Executed in order |
+| `environment` | string | no | Tag such as `dev`, `prod`, `qa`. Colours the sidebar entry |
+| `requireConfirmation` | boolean | no | Every run must be confirmed. See below |
+| `kubernetes` | object | no | Adds a last step. See [kubernetes](#kubernetes) |
 
-### `env` does not do what it says
+Those are all the fields. Anything else in the file does nothing, and the
+editor's Problems panel says so with an amber warning on its line. The file
+still saves: a warning is not an error.
 
-Every generated pipeline carries `env: .env`, and every previous version of
-the documentation said it pointed at the environment file.
+### The environment file
 
-It does not. `EZPipelineController.run()` never looks at `pipeline.env`. It
-finds the file by convention, in the pipeline's own directory:
+The pipeline's variables are in the `.env` in its own folder, found by name
+(failing that, `.env.<pipeline id>`). There is no field for it. Older
+pipelines may carry `env: .env`; the editor flags the line, and removing it
+changes nothing.
 
-1. `.env`
-2. failing that, `.env.<pipeline id>`
+### Its group is its folder
 
-Setting `env: production.env` will not load `production.env`. To use a
-different file, rename it to `.env`.
+A pipeline at `pipelines/FileFreak/Client/Staging` is in the group
+`FileFreak/Client`. There is no `group:` field: to change a pipeline's group,
+move the pipeline.
 
-### `requireConfirmation` is not enforced by the server
+### `requireConfirmation`
 
-Set it and the dashboard shows a confirmation dialog before running. The
-`POST /api/run-pipeline` handler does not check the field, so anything
-calling the API directly, including a schedule, runs without confirming. It
-is a UI courtesy, not a gate.
-
-### `group`
-
-Grouping comes from the **directory layout** under `data/pipelines`, not
-reliably from this field. A pipeline at `pipelines/FileFreak/Client/Staging`
-reports its group as `FileFreak/Client`. A pipeline sitting directly at
-`pipelines/Test` reports an empty group even when its YAML says
-`group: Test`. Treat the field as a hint and the directory as the truth.
+Every run must be confirmed. The app asks first, wherever the run is started
+(the pipeline's page, the run page, the ⌘K palette). A run started through the
+API has to send `"confirmed": true`, or `POST /api/run-pipeline` answers
+`409 confirmation_required`. Schedules and git watches are set up by someone
+allowed to run the pipeline, and run without asking.
 
 ---
 
 ## Step fields
 
-| Field | Type | Required | Read at runtime | Notes |
-|---|---|---|---|---|
-| `name` | string | yes | yes | Display name and the key for step timings |
-| `run` | string | yes | yes | Shell command. Multi-line supported |
-| `cwd` | string | no | yes | See [cwd](#cwd) |
-| `shell` | string | no | yes | e.g. `/bin/bash`. Default is the system shell |
-| `env` | map | no | yes | Step-only variables, but see [precedence](#environment-variable-precedence) |
-| `continueOnError` | boolean | no | yes | Carry on if this step fails |
-| `description` | string | no | yes | Shown in the UI |
-| `type` | string | no | yes | Only `approval` is special |
-| `timeoutSeconds` | number | no | **no** | Declared in `types/yaml`, never consulted |
-| `retries` | number | no | **no** | Same |
-| `condition` | string | no | **no** | Same |
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Display name and the key for step timings |
+| `run` | string | yes, or `steps` | Shell command. Multi-line supported |
+| `steps` | list | instead of `run` | Substeps, run in order. See [substeps](#substeps) |
+| `cwd` | string | no | See [cwd](#cwd) |
+| `shell` | string | no | e.g. `/bin/bash`. Default is the system shell |
+| `env` | map | no | Step-only variables, but see [precedence](#environment-variable-precedence) |
+| `continueOnError` | boolean | no | Carry on if this step fails |
+| `description` | string | no | Shown in the UI |
+| `type` | string | no | `approval` (a gate) or `action` (a button on the run) |
 
-`command` and `image` are not supported and never have been. If you have seen
-them in an example, it was wrong.
+There is no `timeoutSeconds`, `retries`, `condition`, `command` or `image`.
+The editor flags each one and says what to do instead: `timeout 300 <command>`
+for a time limit, a loop in the command for retries, a test at the top of the
+command for a condition.
 
 ### `cwd`
 
@@ -103,11 +93,12 @@ them in an example, it was wrong.
 |---|---|
 | omitted | the pipeline's `workspace/` |
 | a relative path | joined onto `workspace/` |
-| `root` | **`apps/server`**, the server app directory |
+| `root` | the server's own folder |
 
-That last one is a trap. `root` does not mean the repository root and does not
-mean your checkout. It is `PROJECT_ROOT` in `EZPipelineController.ts`, which
-resolves to `apps/server`.
+Avoid `root`. It does not mean the repository root or your checkout: it is the
+server's own folder, which is somewhere different in every install (inside the
+app, in the desktop app). The editor warns about it. Use a path in the
+workspace.
 
 Note also that `cd` inside a `run` does not carry to the next step. Each step
 is a fresh shell. Chain with `&&` inside one step, or set `cwd` on each.
@@ -118,36 +109,73 @@ The build pauses, its status becomes `paused`, and it waits for
 `POST /api/builds/:id/approve`. Steps before it are already done; steps after
 it run on release.
 
-Two things to know: the approve endpoint has **no permission check**, so
-anyone logged in can release anyone's gate; and the internal `build_paused`
-event is not forwarded to the SSE stream, so a UI watching only SSE cannot
-see the build enter the waiting state.
+Releasing a gate needs `run` permission on the pipeline. A gate can be
+released once: a second approve answers 409. The `build_paused` and
+`build_approved` events are on the SSE stream.
+
+A gate is only allowed at the top level, and cannot have substeps.
+
+### Substeps
+
+A step can be made of smaller steps. Give it `steps:` instead of `run:`; the
+children run in order, in the parent's `cwd`, `shell` and `env` unless they set
+their own, and can nest up to six levels. A failing child stops its parent
+unless it has `continueOnError`.
+
+```yaml
+- name: Build and push the images
+  shell: /bin/bash
+  steps:
+    - name: api image
+      run: docker build -t api . && docker push api
+    - name: worker image
+      steps:
+        - name: Build the image
+          run: docker build -t worker ./worker
+        - name: Push to the registry
+          run: docker push worker
+```
+
+A command can report substeps of its own by printing markers. Marker lines are
+not shown in the log.
+
+| Line | Meaning |
+|---|---|
+| `::ezp step <name>` | Open a substep. Inside an open one, it is a child of it |
+| `::ezp done` | Close the innermost open substep as passed |
+| `::ezp fail [message]` | Close it as failed |
+| `::ezp progress <n>/<m> [unit]` | Set a counter on the innermost open substep, or on the step itself |
+
+Substeps the command leaves open close when it ends: passed if it exited 0,
+failed if not. On the run page, a tile with substeps opens into them, and the
+log follows: each line belongs to the substep that was open when it was
+printed.
+
+A pipeline whose steps are the wrong shape (both `run` and `steps`, neither,
+a gate inside substeps) is refused when it is saved.
+
+### Rerunning from a step
+
+`POST /api/run-pipeline` with `fromStep: "<step name>"` starts a new run at
+that step. The steps before it are marked skipped and the workspace is kept as
+the last run left it.
 
 ---
 
 ## `kubernetes`
 
-The presence of this block is what triggers deployment. **There is no
-`enabled` flag**; if the key exists, it runs.
+The block becomes the pipeline's last step, "Deploy to Kubernetes", with its
+output in the run's log. If `kubectl` fails, the run fails.
 
 | Field | Type | Required | What it does |
 |---|---|---|---|
-| `namespace` | string | yes | Logged. Not passed to `kubectl` as `-n` |
-| `deploymentFile` | string | yes | `kubectl apply -f <this>` |
-| `context` | string | no | `kubectl config use-context <this>` first |
+| `deploymentFile` | string | yes | `kubectl apply -f`, relative to the workspace |
 | `serviceFile` | string | no | A second `kubectl apply -f` |
-| `imagePullSecret` | string | no | Declared, not used |
-| `valuesFile` | string | no | Declared, not used |
-| `helmChart` | string | no | Declared, not used |
-
-The entire implementation is `deployToKubernetes()` in
-`EZPipelineController.ts`: optionally switch context, then apply one or two
-files. It does **not** wait for rollout, does **not** report deployment status,
-and swallows any failure into a log line, so a failed `kubectl apply` does not
-fail the build.
-
-Fields named `enabled`, `deploymentName`, `imageName`, `imageTag` and
-`configPath` appeared in older documentation. None of them exist.
+| `context` | string | no | Passed as `--context` |
+| `namespace` | string | no | Passed as `--namespace` |
+| `rollout` | string or list | no | Waited for with `kubectl rollout status`; the step fails if one does not become ready |
+| `timeout` | string | no | Per rollout: `5m` (the default), `90s`, `1h` |
+| `enabled` | boolean | no | `false` keeps the block without deploying |
 
 See [Kubernetes](kubernetes.md).
 
@@ -157,15 +185,20 @@ See [Kubernetes](kubernetes.md).
 
 For each step, from lowest priority to highest:
 
-1. The server process environment, which by this point **includes the
-   pipeline's `.env`**, because loading it assigns onto `process.env`
-2. `PATH`, rewritten to prepend plugin binary directories
-3. Injected paths: `WORKSPACE`, `RESOURCES`, `ENV_FILE`
-4. The step's own `env` map
-5. Injected identifiers and headless flags, which **override step `env`**
+1. The server's own environment, with `PATH` led by the plugins' folders
+2. Instance-wide variables (`.env.global`)
+3. Each group's `.env.group`, outermost group first
+4. The pipeline's `.env`
+5. Injected paths: `WORKSPACE`, `RESOURCES`, `ENV_FILE`
+6. A rollback's variables (`EZP_ROLLBACK`, `EZP_IMAGE_TAG` and the rest)
+7. The step's own `env` map
+8. Injected identifiers and headless flags, which **override step `env`**
 
-Step five is the surprise. These are applied last and cannot be overridden by
-a step:
+The layers are put together for each run and never written into the
+server's own environment, so a variable reaches only the pipeline it belongs
+to.
+
+These are applied last and cannot be overridden by a step:
 
 | Variable | Value |
 |---|---|
@@ -209,23 +242,12 @@ looser permissions and the resulting error is not obvious.
 
 ---
 
-## Two competing type definitions
+## Where this is defined
 
-If you go looking in the source, you will find `EZPIPELINEYAML` declared
-twice:
-
-| File | Status |
-|---|---|
-| `apps/server/src/controllers/EZPipelineController.ts` | **The real one.** What the loader parses against |
-| `apps/server/src/types/yaml/index.ts` | Stale. Nothing imports it except `KubernetesConfig` |
-
-The stale one marks `docker` and `deployment` as **required** and adds
-`testCriteria` and `coverage`. No pipeline sets any of them and no code reads
-them. It also lacks `requireConfirmation`, `environment`, `type` and
-`description`, which the runtime does support.
-
-This page documents the controller's definition, because that is the one that
-decides whether your file works.
+`EZPIPELINEYAML`, `Step` and `KubernetesConfig` in
+`apps/server/src/controllers/EZPipelineController.ts`. The list of fields the
+editor accepts, and what it says about the rest, is in
+`apps/server/src/services/pipelineFile.ts`.
 
 ---
 
@@ -237,7 +259,6 @@ appName: Test
 version: 1.0.0
 description: Test EZPipeline features with mock data
 environment: development
-group: Test
 
 steps:
   - name: Environment Setup

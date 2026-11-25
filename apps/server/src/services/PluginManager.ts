@@ -27,6 +27,12 @@ export interface Plugin {
      * offering to fix it.
      */
     builtin?: boolean;
+    /** Where it sits on Settings › Plugins (design sheet f24). */
+    category?: 'hosting' | 'cloud' | 'containers' | 'infrastructure' | 'data' | 'image';
+    /** The word a step uses to call it, to say which pipelines would break without it. */
+    command?: string;
+    /** Installed into this server's plugin folder, so this server can remove it. */
+    managed?: boolean;
 }
 
 export class PluginManager {
@@ -65,6 +71,13 @@ export class PluginManager {
             description: 'Command-line utility for copying data to/from Azure Storage',
             isInstalled: false,
             checkCommand: 'azcopy --version'
+        },
+        {
+            id: 'gcloud',
+            name: 'Google Cloud CLI',
+            description: 'gcloud and gsutil, for Cloud Run, GKE and Cloud Storage. Signs in with a service account key you add as a resource.',
+            isInstalled: false,
+            checkCommand: 'gcloud --version'
         },
         // Container & Orchestration
         {
@@ -126,6 +139,14 @@ export class PluginManager {
             isInstalled: false,
             checkCommand: 'python3 --version'
         },
+        // Hosting
+        {
+            id: 'filefreak',
+            name: 'FileFreak CLI',
+            description: 'FileFreak from a terminal: copy files, deploy static sites and keep folders in step. Needed by any pipeline that calls filefreak or ff. Authenticates with FILEFREAK_KEY.',
+            isInstalled: false,
+            checkCommand: 'filefreak --version'
+        },
         // Utilities
         {
             id: 'jq',
@@ -179,6 +200,23 @@ export class PluginManager {
         }
     }
 
+    private static readonly META: Record<string, Pick<Plugin, 'category' | 'command'>> = {
+        filefreak: { category: 'hosting', command: 'filefreak|ff' },
+        'aws-cli': { category: 'cloud', command: 'aws' },
+        'azure-cli': { category: 'cloud', command: 'az' },
+        gcloud: { category: 'cloud', command: 'gcloud|gsutil' },
+        bicep: { category: 'cloud', command: 'bicep' },
+        azcopy: { category: 'cloud', command: 'azcopy' },
+        kubectl: { category: 'containers', command: 'kubectl' },
+        helm: { category: 'containers', command: 'helm' },
+        terraform: { category: 'infrastructure', command: 'terraform' },
+        jq: { category: 'data', command: 'jq' },
+        yq: { category: 'data', command: 'yq' },
+    };
+
+    /** Installs going now, so a second click does not start a second one. */
+    private installing = new Set<string>();
+
     public static getInstance(): PluginManager {
         if (!PluginManager.instance) {
             PluginManager.instance = new PluginManager();
@@ -197,12 +235,34 @@ export class PluginManager {
                 const checkCmd = plugin.checkCommand || `${plugin.id} --version`;
                 const version = await this.checkVersion(checkCmd, env);
                 plugin.isInstalled = true;
-                plugin.version = version;
+                // Check commands print anything from "jq-1.7.1" to a warning
+                // line before the version. The first x.y(.z) is the version.
+                plugin.version = version.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? undefined;
             } catch (e) {
                 plugin.isInstalled = false;
                 plugin.version = undefined;
             }
+            const meta = PluginManager.META[plugin.id];
+            plugin.category = plugin.builtin ? 'image' : meta?.category ?? 'data';
+            plugin.command = meta?.command;
+            plugin.managed = !plugin.builtin && fs.existsSync(path.join(this.pluginsDir, plugin.id));
         }
+    }
+
+    /**
+     * Take out a plugin this server installed. Only its own folder is touched:
+     * a tool installed on the host some other way is not this server's to remove.
+     */
+    public removePlugin(id: string): void {
+        const plugin = this.availablePlugins.find(p => p.id === id);
+        if (!plugin || plugin.builtin) throw Object.assign(new Error("That is not a plugin this server can remove."), { status: 400 });
+        if (this.installing.has(id)) throw Object.assign(new Error("It is being installed. Wait for that to finish."), { status: 409 });
+        const dir = path.join(this.pluginsDir, id);
+        if (!fs.existsSync(dir)) throw Object.assign(new Error("It was not installed by this server, so it stays. Remove it on the host."), { status: 400 });
+        fs.rmSync(dir, { recursive: true, force: true });
+        plugin.isInstalled = false;
+        plugin.version = undefined;
+        plugin.managed = false;
     }
 
     private checkVersion(command: string, env: NodeJS.ProcessEnv): Promise<string> {
@@ -266,11 +326,14 @@ export class PluginManager {
     private getInstallCommand(id: string): string | null {
         const os = this.detectOS();
         const arch = this.detectArch();
+        // Each project names its arm64 build differently.
+        const arm = arch === 'aarch64';
+        const goArch = arm ? 'arm64' : 'amd64';
 
         const commands: Record<string, Record<string, string>> = {
             'aws-cli': {
                 'darwin': 'python3 -m venv venv && ./venv/bin/pip install awscli', // V1 via pip (No sudo)
-                'linux': 'curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && unzip -o awscliv2.zip && ./aws/install -i ./install -b ./bin' // Local install
+                'linux': `curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o awscliv2.zip && unzip -qo awscliv2.zip && ./aws/install --update -i ./install -b ./bin` // Local install
             },
             'bicep': {
                 // az owns the binary and knows where to put it. It also needs
@@ -294,8 +357,8 @@ export class PluginManager {
                 'linux': 'if ! python3 -c "import ensurepip" 2>/dev/null; then apt-get update -qq && apt-get install -y -qq python3-venv; fi && rm -rf venv && python3 -m venv venv && ./venv/bin/pip install --quiet --upgrade pip && ./venv/bin/pip install azure-cli'
             },
             'azcopy': {
-                'darwin': 'curl -L "https://aka.ms/downloadazcopy-v10-mac" -o azcopy.zip && unzip -o azcopy.zip && mkdir -p bin && cp azcopy_darwin_amd64_*/azcopy ./bin/ && chmod +x ./bin/azcopy',
-                'linux': 'curl -L "https://aka.ms/downloadazcopy-v10-linux" -o azcopy.tar.gz && tar -xf azcopy.tar.gz && mkdir -p bin && cp azcopy_linux_amd64_*/azcopy ./bin/ && chmod +x ./bin/azcopy'
+                'darwin': `curl -fsSL "https://aka.ms/downloadazcopy-v10-mac${arm ? '-arm64' : ''}" -o azcopy.zip && unzip -qo azcopy.zip && mkdir -p bin && cp azcopy_darwin_*/azcopy ./bin/ && chmod +x ./bin/azcopy`,
+                'linux': `curl -fsSL "https://aka.ms/downloadazcopy-v10-linux${arm ? '-arm64' : ''}" -o azcopy.tar.gz && tar -xf azcopy.tar.gz && mkdir -p bin && cp azcopy_linux_*/azcopy ./bin/ && chmod +x ./bin/azcopy`
             },
             'docker': {
                 'darwin': `curl -L "https://download.docker.com/mac/static/stable/${arch}/docker-20.10.9.tgz" -o docker.tgz && tar -xf docker.tgz && mkdir -p bin && cp docker/docker ./bin/ && chmod +x ./bin/docker`,
@@ -305,29 +368,46 @@ export class PluginManager {
                 'darwin': arch === 'aarch64'
                     ? 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl" && chmod +x kubectl && mkdir -p bin && mv kubectl bin/'
                     : 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/amd64/kubectl" && chmod +x kubectl && mkdir -p bin && mv kubectl bin/',
-                'linux': 'curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mkdir -p bin && mv kubectl bin/'
+                'linux': `curl -fsSLO "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${goArch}/kubectl" && chmod +x kubectl && mkdir -p bin && mv kubectl bin/`
             },
             'helm': {
-                'darwin': 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && mkdir -p bin && mv /usr/local/bin/helm ./bin/ 2>/dev/null || true',
-                'linux': 'curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && mkdir -p bin && mv /usr/local/bin/helm ./bin/ 2>/dev/null || true'
+                // Into ./bin, with no sudo: the script's default is /usr/local/bin,
+                // which the server user cannot write and a container recreate loses.
+                'darwin': 'mkdir -p bin && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | HELM_INSTALL_DIR="$PWD/bin" USE_SUDO=false bash',
+                'linux': 'mkdir -p bin && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | HELM_INSTALL_DIR="$PWD/bin" USE_SUDO=false bash'
             },
             'terraform': {
                 'darwin': arch === 'aarch64'
                     ? 'curl -LO https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_darwin_arm64.zip && unzip -o terraform_1.6.0_darwin_arm64.zip && mkdir -p bin && mv terraform bin/ && chmod +x bin/terraform'
                     : 'curl -LO https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_darwin_amd64.zip && unzip -o terraform_1.6.0_darwin_amd64.zip && mkdir -p bin && mv terraform bin/ && chmod +x bin/terraform',
-                'linux': 'curl -LO https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_amd64.zip && unzip -o terraform_1.6.0_linux_amd64.zip && mkdir -p bin && mv terraform bin/ && chmod +x bin/terraform'
+                'linux': `curl -fsSLO https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_${goArch}.zip && unzip -qo terraform_1.6.0_linux_${goArch}.zip && mkdir -p bin && mv terraform bin/ && chmod +x bin/terraform`
             },
             'jq': {
                 'darwin': arch === 'aarch64'
                     ? 'curl -L https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-macos-arm64 -o jq && chmod +x jq && mkdir -p bin && mv jq bin/'
                     : 'curl -L https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-macos-amd64 -o jq && chmod +x jq && mkdir -p bin && mv jq bin/',
-                'linux': 'curl -L https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o jq && chmod +x jq && mkdir -p bin && mv jq bin/'
+                'linux': `curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${goArch} -o jq && chmod +x jq && mkdir -p bin && mv jq bin/`
             },
             'yq': {
                 'darwin': arch === 'aarch64'
                     ? 'curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_darwin_arm64 -o yq && chmod +x yq && mkdir -p bin && mv yq bin/'
                     : 'curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_darwin_amd64 -o yq && chmod +x yq && mkdir -p bin && mv yq bin/',
-                'linux': 'curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o yq && chmod +x yq && mkdir -p bin && mv yq bin/'
+                'linux': `curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${goArch} -o yq && chmod +x yq && mkdir -p bin && mv yq bin/`
+            },
+            'filefreak': {
+                // FileFreak's own installer, pointed at this plugin's folder instead of
+                // ~/.local/bin, which would be lost when the container is recreated. It
+                // picks the build for this OS and CPU and refuses one whose size or hash
+                // is not what FileFreak published. It leaves filefreak and ff in ./bin.
+                'darwin': 'mkdir -p bin && export FILEFREAK_INSTALL="$PWD/bin" && curl -fsSL https://filefreak.io/install.sh | sh',
+                'linux': 'mkdir -p bin && export FILEFREAK_INSTALL="$PWD/bin" && curl -fsSL https://filefreak.io/install.sh | sh'
+            },
+            'gcloud': {
+                // Google's own archive, unpacked here, with no PATH or rc-file
+                // changes; ./bin/gcloud is a link into it. Needs python3, which
+                // the image has.
+                'darwin': `curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-darwin-${arm ? 'arm' : 'x86_64'}.tar.gz" -o gcloud.tar.gz && rm -rf google-cloud-sdk && tar -xzf gcloud.tar.gz && ./google-cloud-sdk/install.sh --quiet --usage-reporting=false --path-update=false --command-completion=false && mkdir -p bin && ln -sf "$PWD/google-cloud-sdk/bin/gcloud" bin/gcloud && ln -sf "$PWD/google-cloud-sdk/bin/gsutil" bin/gsutil`,
+                'linux': `curl -fsSL "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-${arm ? 'arm' : 'x86_64'}.tar.gz" -o gcloud.tar.gz && rm -rf google-cloud-sdk && tar -xzf gcloud.tar.gz && ./google-cloud-sdk/install.sh --quiet --usage-reporting=false --path-update=false --command-completion=false && mkdir -p bin && ln -sf "$PWD/google-cloud-sdk/bin/gcloud" bin/gcloud && ln -sf "$PWD/google-cloud-sdk/bin/gsutil" bin/gsutil`
             },
             'git': {
                 'darwin': 'brew install git',
@@ -344,11 +424,14 @@ export class PluginManager {
 
         // Special handling for Claude Code (Install in AI SANDBOX)
 
+        if (this.installing.has(id)) throw Object.assign(new Error("It is already being installed."), { status: 409 });
         const command = this.getInstallCommand(id);
+        if (command) this.installing.add(id);
         if (command) {
             // Create plugin-specific directory
             const pluginDir = path.join(this.pluginsDir, id);
-            if (!fs.existsSync(pluginDir)) {
+            const fresh = !fs.existsSync(pluginDir);
+            if (fresh) {
                 fs.mkdirSync(pluginDir, { recursive: true });
             }
 
@@ -360,7 +443,7 @@ export class PluginManager {
                 onProgress(`NOTE: This command requires sudo privileges. If the server user is not in sudoers with NOPASSWD, this will fail.\n`);
             }
 
-            return new Promise((resolve, reject) => {
+            return new Promise<void>((resolve, reject) => {
                 const child = spawn(command, {
                     shell: true,
                     cwd: pluginDir // Execute in plugin directory
@@ -378,7 +461,12 @@ export class PluginManager {
                     }
                 });
                 child.on('error', err => reject(err));
-            });
+            }).catch((e) => {
+                // A failed first install leaves nothing behind, so the folder
+                // does not make it look installed or removable.
+                if (fresh) fs.rmSync(pluginDir, { recursive: true, force: true });
+                throw e;
+            }).finally(() => this.installing.delete(id));
         }
 
         throw new Error(`Automated installation for ${plugin.name} is not supported on this OS (${this.detectOS()}).`);

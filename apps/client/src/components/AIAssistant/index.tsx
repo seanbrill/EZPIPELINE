@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Terminal, Send, X, Loader2, RotateCcw, Copy, Trash2, GripHorizontal, ExternalLink, Power } from 'lucide-react';
+import { Terminal, Send, X, Loader2, RotateCcw, Copy, Trash2, GripHorizontal } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import Ansi from 'ansi-to-react';
 import API_URL from '../../config/api';
@@ -67,7 +67,8 @@ const useDraggable = () => {
     return { position, startDrag, dragRef, isDragging };
 };
 
-type AIStatus = 'checking' | 'not-installed' | 'not-configured' | 'installing' | 'login-required' | 'logging-in' | 'authenticating' | 'ready' | 'active';
+/** What the server says (GET /api/ai/status): a key is configured or it is not. */
+type AIStatus = 'checking' | 'not-configured' | 'active';
 
 const AIAssistant: React.FC = () => {
     const { token } = useAuth();
@@ -80,12 +81,10 @@ const AIAssistant: React.FC = () => {
     const [logs, setLogs] = useState<string[]>([]);
     const [isInitializing, setIsInitializing] = useState(false);
     const [isTyping, setIsTyping] = useState(false);
-    const [authUrl, setAuthUrl] = useState<string | null>(null);
 
     // Refs
     const isInitializingRef = useRef(false);
     const chatEndRef = useRef<HTMLDivElement>(null);
-    const isInstallingRef = useRef(false);
     const isRestartingRef = useRef(false);
     const hasShownWelcomeRef = useRef(false);
     const lastInputRef = useRef<string>("");
@@ -131,7 +130,7 @@ const AIAssistant: React.FC = () => {
 
     useEffect(() => {
         scrollToBottom();
-    }, [logs, isInitializing, isTyping, authUrl]);
+    }, [logs, isInitializing, isTyping]);
 
     useEffect(() => {
         if (isInitializing) {
@@ -153,23 +152,9 @@ const AIAssistant: React.FC = () => {
             const data = await res.json();
             setStatusMessage(typeof data.message === 'string' ? data.message : null);
 
-            // `configured` and `message` are what the server actually knows.
-            // `installed`/`loggedIn` are compatibility shims it still sends:
-            // installed is now hard-coded true, so reading those two mapped an
-            // unconfigured server to 'ready' and drew "Agent is ready to help
-            // you" over an assistant with no API key. The panel then offered
-            // "(Re)Authenticate", which cannot supply a key that lives in the
-            // server's environment. Every message failed and nothing on screen
-            // said why.
-            if (typeof data.configured === 'boolean') {
-                setStatus(data.configured ? 'active' : 'not-configured');
-            } else if (data.loggedIn) {
-                setStatus('active');
-            } else if (!data.installed) {
-                setStatus('not-installed');
-            } else {
-                setStatus('ready');
-            }
+            // There is nothing to install and nobody signs in: the engine is the
+            // Anthropic API, and it answers when the server has a key.
+            setStatus(data.configured ? 'active' : 'not-configured');
         } catch (err) {
             console.error("Failed to check status", err);
         }
@@ -178,22 +163,11 @@ const AIAssistant: React.FC = () => {
     const sendAction = async (action: string, payload: any = {}) => {
         if (!socket) return;
 
-        if (action === 'install') {
-            isInstallingRef.current = true;
-            setStatus('installing');
-            setLogs([]);
-        }
-        if (action === 'login') {
-            setStatus('active');
-            setLogs([]);
-            setAuthUrl(null);
-        }
         if (action === 'spawn') {
             if (status === 'active') {
                 isRestartingRef.current = true;
             }
             setStatus('active');
-            setAuthUrl(null);
             setIsInitializing(true);
         }
 
@@ -214,12 +188,6 @@ const AIAssistant: React.FC = () => {
             console.error("Failed to send action:", err);
             setLogs(prev => [...prev, `\\x1b[31m❌ Network Request Failed\\x1b[0m`]);
             setIsTyping(false);
-        }
-
-        if (action === 'install') {
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            isInstallingRef.current = false;
-            checkStatus();
         }
     };
 
@@ -293,8 +261,6 @@ const AIAssistant: React.FC = () => {
 
             if (cleanData.includes('Channelling...') || cleanData.includes('Hyperspacing...') || cleanData.includes('Swirling...') || cleanData.includes('Unravelling...') || cleanData.includes('Razzle-dazzling...') || cleanData.includes('Tinkering') || cleanData.includes('Baked for') || cleanData.includes('thought for') || cleanData.includes('Sketching') || cleanData.includes('Fluttering') || cleanData.includes('? for shortcuts') || cleanData.includes('esc to interrupt') || cleanData.includes('ctrl+g to edit') || cleanData.includes('AI Sandbox Setup') || cleanData.includes('Tip: Did you know') || cleanData.includes('Tip: Create custom slash commands')) return;
 
-            const urlMatch = data.match(/(https:\/\/console\.anthropic\.com\/auth\/verify\?code=[a-zA-Z0-9_-]+)/);
-            if (urlMatch) setAuthUrl(urlMatch[1]);
 
             const norm = data.replace(/\r\n/g, '\\n').replace(/\r/g, '\\n');
             const lines = norm.split('\\n');
@@ -316,11 +282,10 @@ const AIAssistant: React.FC = () => {
 
         newSocket.on('claude-success', (msg) => {
             setLogs(prev => [...prev, `\\x1b[32m✅ ${msg}\\x1b[0m`]);
-            if (msg.includes("Authentication successful")) { setAuthUrl(null); setTimeout(() => setStatus('ready'), 1000); }
             setTimeout(() => checkStatus(), 500);
         });
         newSocket.on('claude-error', (msg) => { setIsTyping(false); setLogs(prev => [...prev, `\\x1b[31m❌ Error: ${msg}\\x1b[0m`]); });
-        newSocket.on('claude-exit', () => { setIsTyping(false); if (isRestartingRef.current) { isRestartingRef.current = false; return; } if (!isInstallingRef.current) checkStatus(); });
+        newSocket.on('claude-exit', () => { setIsTyping(false); if (isRestartingRef.current) { isRestartingRef.current = false; return; } checkStatus(); });
 
         setSocket(newSocket);
         return () => { newSocket.disconnect(); };
@@ -376,24 +341,6 @@ const AIAssistant: React.FC = () => {
             case 'checking':
                 return <div className="h-full flex items-center justify-center text-slate-400 font-sans"><Loader2 className="animate-spin mr-2" /> Checking Status...</div>;
 
-            case 'not-installed':
-                return (
-                    <div className="flex flex-col items-center justify-center h-full text-center space-y-4 p-6 bg-emerald-950/20">
-                        <div className="w-16 h-16 bg-emerald-500/10 rounded-full flex items-center justify-center border border-emerald-500/20 mb-2">
-                            <Terminal className="w-8 h-8 text-emerald-500" />
-                        </div>
-                        <h3 className="font-bold text-white text-lg tracking-tight">AI Agent Setup</h3>
-                        <p className="text-zinc-400 text-xs max-w-[240px] leading-relaxed">
-                            Initialize the Claude secure agent to assist with pipelines and configuration.
-                        </p>
-                        <button
-                            onClick={() => sendAction('install')}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-lg shadow-emerald-900/20 hover:shadow-emerald-900/40 w-full"
-                        >
-                            Initialize Agent
-                        </button>
-                    </div>
-                );
             case 'not-configured':
                 return (
                     <div className="flex flex-col items-center justify-center h-full text-center space-y-4 p-6 bg-[#111]">
@@ -412,31 +359,6 @@ const AIAssistant: React.FC = () => {
                         </button>
                     </div>
                 );
-            case 'installing':
-                return (
-                    <div className="flex flex-col items-center justify-center h-full space-y-4 bg-[#111]">
-                        <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
-                        <span className="text-sm font-medium text-emerald-500/80 animate-pulse">Installing Sandbox Environment...</span>
-                    </div>
-                );
-            case 'ready':
-                return (
-                    <div className="h-full flex flex-col items-center justify-center p-6 text-center space-y-4 font-sans bg-[#111]">
-                        <div className="w-16 h-16 bg-emerald-600/20 rounded-full flex items-center justify-center mb-2 shadow-lg shadow-emerald-900/20">
-                            <Terminal className="w-8 h-8 text-emerald-400" />
-                        </div>
-                        <h3 className="text-xl font-bold text-white">Claude Assistant</h3>
-                        <p className="text-sm text-slate-400 max-w-xs leading-relaxed">Agent is ready to help you build pipelines and manage your project.</p>
-                        <div className="flex gap-3">
-                            <button onClick={() => sendAction('login')} className="flex items-center gap-2 bg-[#333] hover:bg-[#444] text-white px-6 py-2 rounded-lg transition-all font-medium border border-[#444]">
-                                (Re)Authenticate
-                            </button>
-                            <button onClick={() => sendAction('spawn')} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg transition-all shadow-lg hover:shadow-emerald-500/25 font-medium">
-                                <Power className="w-4 h-4" /> Start Agent
-                            </button>
-                        </div>
-                    </div>
-                );
             default:
                 return (
                     <div className="flex flex-col h-full bg-[#111111]">
@@ -444,16 +366,6 @@ const AIAssistant: React.FC = () => {
                         <div className="flex-1 overflow-y-auto p-4 space-y-2 scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
                             <div className="h-4"></div>
                             {logs.map((log, i) => renderLogLine(log, i))}
-
-                            {/* Auth Link */}
-                            {authUrl && (
-                                <div className="my-4 p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex flex-col items-center gap-3">
-                                    <span className="text-emerald-300 font-medium text-sm">Action Required: Authenticate with Anthropic</span>
-                                    <a href={authUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-md text-sm font-semibold transition-colors">
-                                        Visit Auth URL <ExternalLink className="w-3 h-3" />
-                                    </a>
-                                </div>
-                            )}
 
                             {/* Typing Bubble */}
                             {(isInitializing || isTyping) && (

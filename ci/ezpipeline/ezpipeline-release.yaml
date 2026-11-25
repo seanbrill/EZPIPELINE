@@ -1,0 +1,143 @@
+# EZPipeline, released by EZPipeline: check the code, publish a new version's installers to
+# the FileFreak release folder, build the public site from that folder, and deploy it.
+#
+# A version already in the release folder is left alone, so a run never replaces what a
+# Mac uploaded. On a Linux host the installers are Windows and Linux only: only macOS makes
+# the macOS app, so a Mac publishes those (docs/RELEASING.md), and release-check says which
+# systems a version has no file for.
+#
+# Variables live in EZPipeline, not here: see ezpipeline-release.env.example beside this.
+
+id: "da5062ef-1982-41fe-b5f4-1782d206d04b"
+appName: "EZPipeline release"
+version: 1.0.0
+description: >
+  Check EZPipeline, publish a new version's desktop installers to the FileFreak release
+  folder, build the public site from it and deploy it.
+
+steps:
+  - name: Preflight
+    description: Checks the programs and variables the run needs, before it changes anything.
+    shell: /bin/bash
+    run: |
+      set -euo pipefail
+      for tool in git node npm docker; do command -v "$tool" >/dev/null || { echo "MISSING program: $tool"; exit 1; }; done
+      node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' || { echo "Node 20 or newer is needed, this is $(node -v)"; exit 1; }
+      missing=0
+      for v in EZP_REPO_URL EZP_RELEASE_FOLDER FILEFREAK_KEY FILEFREAK_SITE_KEY EZP_SITE_NAME EZP_IMAGE FILEFREAK_IMAGE_KEY; do
+        [ -n "$(printenv "$v" || true)" ] || { echo "MISSING variable: $v"; missing=1; }
+      done
+      [ "$missing" = 0 ] || exit 1
+      # From EZPipeline's "FileFreak CLI" plugin (Settings, Plugins).
+      command -v filefreak >/dev/null || { echo "MISSING program: filefreak. Install the FileFreak CLI plugin: Settings, Plugins."; exit 1; }
+      filefreak --version
+      # Can the site key deploy? Asked now, not after the build.
+      if ! sites=$(FILEFREAK_KEY="$FILEFREAK_SITE_KEY" filefreak sites list 2>&1); then
+        echo "The site cannot be deployed with FILEFREAK_SITE_KEY: $sites"
+        echo "It must be a key made for the app that owns the site, not limited to a folder, allowed sites:deploy."
+        exit 1
+      fi
+      echo "$sites" | grep -qw -- "$EZP_SITE_NAME" || { echo "That key's app has no site called $EZP_SITE_NAME. It has: $sites"; exit 1; }
+
+  - name: Fetch the code
+    shell: /bin/bash
+    run: |
+      set -euo pipefail
+      rm -rf ezpipeline
+      git clone --branch "${EZP_BRANCH:-main}" --depth 1 "$EZP_REPO_URL" ezpipeline
+      git -C ezpipeline --no-pager log -1 --format='building %H %s'
+
+  - name: Install and test
+    shell: /bin/bash
+    cwd: ./ezpipeline
+    run: |
+      set -euo pipefail
+      # Packages from npm run here, so no key is in their reach.
+      unset FILEFREAK_KEY FILEFREAK_SITE_KEY FILEFREAK_IMAGE_KEY
+      npm ci
+      NODE_ENV=development npm test
+      (cd apps/client && npx tsc --noEmit -p tsconfig.app.json)
+      (cd apps/site && npm ci && npm test)
+      (cd apps/desktop && npm ci && npm test)
+
+  - name: Publish the installers
+    description: >
+      Only for a version the release folder does not have yet. Builds the installers this
+      host can make, uploads them with FILEFREAK_KEY, then reads them back the way the
+      apps will. Any other run checks the key can still write, and goes on.
+    shell: /bin/bash
+    cwd: ./ezpipeline
+    run: |
+      set -euo pipefail
+      if node scripts/release-check.mjs --exists; then
+        node scripts/publish-release.mjs --check
+        exit 0
+      fi
+      # The installers are built with no key in reach; only the upload holds the write key.
+      nokeys="env -u FILEFREAK_KEY -u FILEFREAK_SITE_KEY -u FILEFREAK_IMAGE_KEY"
+      if [ "$(uname)" = Darwin ]; then
+        $nokeys node apps/desktop/scripts/dist.mjs --all
+      else
+        $nokeys node apps/desktop/scripts/dist.mjs --platform win32
+        $nokeys node apps/desktop/scripts/dist.mjs --platform linux
+      fi
+      env -u FILEFREAK_SITE_KEY -u FILEFREAK_IMAGE_KEY node scripts/publish-release.mjs
+      node scripts/release-check.mjs
+
+  - name: Publish the image
+    description: >
+      The container image the self-host wizard deploys, for x86 and Arm, pushed to FileFreak's
+      container registry as $EZP_IMAGE:<version> and :latest. A version already there is left
+      alone. Then checks that a visitor with no key can pull it, which is what a new instance does.
+    shell: /bin/bash
+    cwd: ./ezpipeline
+    run: |
+      set -euo pipefail
+      version=$(node -p 'require("./package.json").version')
+      image="$EZP_IMAGE"
+      registry="${image%%/*}"
+      unset FILEFREAK_KEY FILEFREAK_SITE_KEY
+      # FileFreak ignores the username; the key (containers:write) is what signs in.
+      echo "$FILEFREAK_IMAGE_KEY" | docker login "$registry" --username key --password-stdin
+      if docker manifest inspect "$image:$version" >/dev/null 2>&1; then
+        echo "$image:$version is already published"
+      else
+        docker buildx create --use --name ezp-release >/dev/null 2>&1 || docker buildx use ezp-release
+        # Each layer has to reach FileFreak within 240 seconds; a retry resumes from the layers already there.
+        for try in 1 2 3; do
+          if docker buildx build --platform linux/amd64,linux/arm64 --tag "$image:$version" --tag "$image:latest" --push .; then break; fi
+          [ "$try" = 3 ] && { echo "The push failed three times. The log above says which layer."; exit 1; }
+          echo "The push failed; trying again ($try of 3)"
+        done
+        echo "Published $image:$version"
+      fi
+      docker logout "$registry" >/dev/null
+      # Asked the way a new instance asks: no saved sign-ins at all.
+      if DOCKER_CONFIG=$(mktemp -d) docker manifest inspect "$image:$version" >/dev/null 2>&1; then
+        echo "Anybody can pull $image:$version"
+      else
+        echo "WARNING: $image:$version needs a key to pull, so the self-host wizard cannot deploy it."
+        echo "Make it public once on FileFreak: Developers, Container images, $image, Who can pull it."
+      fi
+
+  - name: Build the site
+    description: >
+      Lists the releases from the public release folder, with no key, the way the Download page
+      and the desktop app read it, and builds the site from them.
+    shell: /bin/bash
+    # The host may run with NODE_ENV=development, and Next.js only builds in production.
+    env:
+      NODE_ENV: production
+    cwd: ./ezpipeline/apps/site
+    run: |
+      set -euo pipefail
+      unset FILEFREAK_KEY FILEFREAK_SITE_KEY FILEFREAK_IMAGE_KEY
+      npm run build
+      ls out | head
+
+  - name: Deploy the site
+    shell: /bin/bash
+    cwd: ./ezpipeline/apps/site
+    run: |
+      set -euo pipefail
+      FILEFREAK_KEY="$FILEFREAK_SITE_KEY" filefreak sites deploy out --site "$EZP_SITE_NAME"

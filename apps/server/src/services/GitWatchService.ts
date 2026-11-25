@@ -4,6 +4,7 @@ import { DatabaseService } from "../services/Database.js";
 import Logger from "../controllers/Logger.js";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import { readAccessForGroup } from "./gitCredentials.js";
+import { CommitService } from "./CommitService.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +29,9 @@ const TICK_MS = 15_000;
 
 /** `git ls-remote` against an unreachable host otherwise hangs the tick. */
 const LS_REMOTE_TIMEOUT_MS = 20_000;
+
+/** How long a watch waits for commit details before starting the run anyway. */
+const COMMIT_RESOLVE_WAIT_MS = 15_000;
 
 const MIN_POLL_SECONDS = 15;
 
@@ -296,8 +300,23 @@ export class GitWatchService {
             `Git watch ${w.id}: ${w.repo_url}#${w.branch} moved to ${sha.slice(0, 12)}, running ${w.pipeline_target}`
         );
 
+        // What the new head IS, before the run starts: subject, author and
+        // diffstat from the cache clone, so the run's card is never just a
+        // sha. Bounded, because a first clone of a big repository must not
+        // hold up the deploy; the run starts either way.
+        const controller = EZPipelineController.instance;
+        const resolved = await Promise.race([
+            CommitService.getInstance().range(w.repo_url, w.last_sha, sha, w.group_path).catch((e) => {
+                this.logger.warn(`Git watch ${w.id}: could not read commit details for ${sha.slice(0, 12)}: ${e}`);
+                return [];
+            }),
+            new Promise<[]>((r) => setTimeout(() => r([]), COMMIT_RESOLVE_WAIT_MS)),
+        ]);
+        if (resolved.length) {
+            controller.emit("commit_resolved", { pipelineId: w.pipeline_target, repo: w.repo_url, branch: w.branch, sha, commits: resolved });
+        }
+
         try {
-            const controller = EZPipelineController.instance;
             // Same reason as the scheduler and POST /run-pipeline: `targets` is
             // read at boot, so a pipeline.yaml edited any other way leaves this
             // process running the version it started with. A push-triggered run
@@ -309,6 +328,11 @@ export class GitWatchService {
                 // The commit, not just "automatic": the first question about a
                 // deploy nobody started is which push caused it.
                 triggeredBy: `git watch ${w.branch}@${sha.slice(0, 7)}`,
+                commitSha: sha,
+            }).catch((e) => {
+                // Not awaited, so the catch below never saw a run that failed to start.
+                db.prepare(`UPDATE git_watches SET last_error = ? WHERE id = ?`).run(`triggered but failed to start: ${String(e).slice(0, 500)}`, w.id);
+                this.logger.error(`Git watch ${w.id}: the run failed to start: ${e}`);
             });
         } catch (e) {
             const msg = String(e).slice(0, 500);

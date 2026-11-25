@@ -1,13 +1,46 @@
 import * as fs from "fs";
 import path from "path";
 import { parse } from "yaml";
-import { KubernetesConfig } from "../types/yaml";
+import { normalizePipeline } from "../services/pipelineFile.js";
 
 // Interface for Logger compatibility
 interface ILogger {
   info(message: string): void;
   warn(message: string): void;
   error(message: string, error?: any): void;
+  /** One line of a step's own output. */
+  out?(text: string, stream: "stdout" | "stderr"): void;
+}
+
+
+export interface RunOptions {
+  customYaml?: string,
+  customWorkspace?: string,
+  skipClean?: boolean,
+  autoApprove?: boolean,
+  triggeredBy?: string,
+  /** The commit this run is expected to build, when the trigger knows it (a git watch). */
+  commitSha?: string,
+  /**
+   * Variables for THIS RUN ONLY, above every file-based layer.
+   *
+   * Written by a rollback, which is the one case where the instruction is
+   * more specific than any scope: "deploy this exact tag, whatever the
+   * pipeline would have built". They are never persisted, so the next
+   * ordinary run is unaffected.
+   */
+  envOverrides?: Record<string, string>,
+  /**
+   * Rerun from this step: the ones before it are marked skipped and the
+   * workspace is kept as the last run left it, so their output is still there.
+   */
+  fromStep?: string,
+}
+
+export class ApprovalError extends Error {
+  constructor(public code: "not_found" | "not_paused", message: string) {
+    super(message);
+  }
 }
 
 export interface EZPIPELINEYAML {
@@ -16,16 +49,40 @@ export interface EZPIPELINEYAML {
   version: string;
   description: string;
   steps: Step[];
-  env?: string;
+  /** A dev, prod or qa tag, shown beside the pipeline. */
+  environment?: string;
+  /** Becomes the last step, "Deploy to Kubernetes" (services/pipelineFile.ts). */
   kubernetes?: KubernetesConfig;
+  /** The folder it is in, under the pipelines folder. Set as it is loaded, never from the file. */
   group?: string;
   filePath?: string; // Added for frontend management
-  requireConfirmation?: boolean; // Require confirmation before running
+  /** A run needs confirming: the run route refuses one that is not confirmed. */
+  requireConfirmation?: boolean;
+}
+
+export interface KubernetesConfig {
+  /** false: leave the block in the file without deploying. */
+  enabled?: boolean;
+  /** The kubeconfig context, passed as --context. Not switched globally. */
+  context?: string;
+  /** Passed as --namespace. */
+  namespace?: string;
+  /** kubectl apply -f, from the workspace. */
+  deploymentFile: string;
+  /** A second kubectl apply -f. */
+  serviceFile?: string;
+  /** Wait for these ("deployment/web") with kubectl rollout status; the step fails if one does not become ready. */
+  rollout?: string | string[];
+  /** How long each rollout may take: "5m" (the default), "90s", "1h". */
+  timeout?: string;
 }
 
 export interface Step {
   name: string;
+  /** The command. Absent when the step is made of `steps:` instead. */
   run: string;
+  /** Substeps, run in order in this step's cwd and env (services/substeps.ts). */
+  steps?: Step[];
   /**
    * For `type: action`. The chain this button runs, in order, stopping at the
    * first failure. See services/ActionRunner.ts.
@@ -202,7 +259,10 @@ import { stepEstimates } from "../services/stepEstimates.js";
 
 import dotenv from "dotenv";
 import Logger from "./Logger.js";
-import { Build } from "../types/other";
+import { LineSplitter } from "../services/LineSplitter.js";
+import { DatabaseService } from "../services/Database.js";
+import { CommitService } from "../services/CommitService.js";
+import { Build } from "../types/other/index.js";
 import { VersioningService } from "../services/VersioningService.js";
 import { ProvenanceService } from "../services/ProvenanceService.js";
 import { BuildService } from "../services/BuildService.js";
@@ -212,6 +272,9 @@ import { EventEmitter } from "events";
 // Serve static files (adjust paths as needed)
 import { fileURLToPath } from "url";
 import { PIPELINES_DIR } from "../config/index.js";
+import { SubstepTracker, validateSteps } from "../services/substeps.js";
+import { readEnv } from "../services/EnvLayers.js";
+import { CommandFailed, exitMeaning, failureLines, failureSummary, startMeaning, variablesInTrouble } from "../services/stepFailure.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "../../"); // apps/server root
@@ -314,6 +377,8 @@ export default class EZPipelineController extends EventEmitter {
         endTime: b.ended_at ? new Date(b.ended_at) : undefined,
         triggeredBy: (b as any).triggered_by || 'manual',
         activeStep: activeStepName,
+        // Why it failed, in one line (services/stepFailure.ts), redacted when it was written.
+        error: b.status === 'failed' || b.status === 'error' ? ((b as any).error ?? undefined) : undefined,
         // Provenance, read alongside the row rather than fetched per build by
         // the client: the dashboard renders a hundred of these and a request
         // each would be a hundred requests to draw one page.
@@ -358,6 +423,13 @@ export default class EZPipelineController extends EventEmitter {
             }
           }
 
+          // A step that failed and was allowed to (continueOnError) failed, whatever came after.
+          if (timings[s.name]?.status === 'failed' && timings[s.name]?.continueOnError) stepStatus = 'failed';
+
+          // A step the run stepped over says so, whatever the run's outcome:
+          // a rerun from a later step did not succeed at the ones it skipped.
+          if (timings[s.name]?.status === 'skipped' && s.type !== 'action') stepStatus = 'skipped';
+
           let stepDuration: number | undefined = undefined;
           if (timings[s.name]) {
             stepDuration = timings[s.name].duration;
@@ -401,7 +473,10 @@ export default class EZPipelineController extends EventEmitter {
             estimatedDuration: s.type === 'approval'
               ? undefined
               : estimates.get(b.target)?.get(s.name),
-            startedAt: typeof timings[s.name]?.start === "number" ? timings[s.name].start : undefined
+            startedAt: typeof timings[s.name]?.start === "number" ? timings[s.name].start : undefined,
+            // A failed step's exit code, what it means, its last lines and any unset variables.
+            failure: timings[s.name]?.failure,
+            continueOnError: s.continueOnError || undefined,
           };
         }) : []
       };
@@ -419,7 +494,7 @@ export default class EZPipelineController extends EventEmitter {
   }
 
   public refreshTargets() {
-    const pipelinesDir = path.resolve(PROJECT_ROOT, "data/pipelines");
+    const pipelinesDir = PIPELINES_DIR;
 
     // Create default structure if not exists
     if (!fs.existsSync(pipelinesDir)) {
@@ -548,10 +623,11 @@ export default class EZPipelineController extends EventEmitter {
         return null;
       }
 
-      if (parsed) {
-        parsed.group = file.group;
-        parsed.filePath = file.configPath;
-      }
+      if (parsed && typeof parsed === "object") normalizePipeline(parsed, { group: file.group, filePath: file.configPath });
+      // Loaded anyway, so one bad step does not hide the pipeline from the people
+      // who have to fix it; the editor refuses to save it in this state.
+      const problems = parsed ? validateSteps(parsed.steps) : [];
+      if (problems.length) this.logger.warn(`Pipeline ${parsed.id ?? file.configPath}: ${problems.join('; ')}`);
       return parsed;
     }).filter(p => p !== null && p !== undefined) as EZPIPELINEYAML[];
 
@@ -611,33 +687,6 @@ export default class EZPipelineController extends EventEmitter {
       }
     } catch (e) {
       this.logger.error("failed to record build provenance", e as Error);
-    }
-  }
-
-  private processK8Templates() {
-    const k8sDir = path.resolve(PROJECT_ROOT, "yaml/k8s");
-    const outputDir = path.resolve(PROJECT_ROOT, "pipeline_workspace/PIPELINE_OUTPUT/yaml");
-
-    if (!fs.existsSync(k8sDir)) {
-      this.logger.warn(`Kubernetes YAML directory not found: ${k8sDir}`);
-      return;
-    }
-
-    fs.mkdirSync(outputDir, { recursive: true });
-
-    const k8sFiles = fs
-      .readdirSync(k8sDir)
-      .filter(file => file.endsWith(".yaml") || file.endsWith(".yml"));
-
-    for (const file of k8sFiles) {
-      const filePath = path.join(k8sDir, file);
-      const rawContent = fs.readFileSync(filePath, "utf8");
-
-      const interpolated = this.interpolateEnv(rawContent, process.env);
-      const outputFilePath = path.join(outputDir, file);
-
-      fs.writeFileSync(outputFilePath, interpolated, "utf8");
-      this.logger.info(`Rendered ${file} -> ${outputFilePath}`);
     }
   }
 
@@ -775,32 +824,10 @@ export default class EZPipelineController extends EventEmitter {
       const cmd = parts[0];
       const args = parts.slice(1);
 
-      // Resolve path
-      let resolvedCwd: string;
-
-      if (cwd && path.isAbsolute(cwd)) {
-        resolvedCwd = cwd;
-      } else {
-        // Fallback or relative to default workspace (legacy support or relative steps)
-        // If cwd is "root", ensure we mean project root
-        if (cwd === "root") {
-          resolvedCwd = PROJECT_ROOT;
-        } else {
-          // Default to PIPELINE_OUTPUT for backward compatibility if logic elsewhere depends on it, 
-          // BUT since we are shifting architecture, maybe we shouldn't.
-          // However, the `run` method determines the correct absolute CWD now. 
-          // So if `cwd` is passed from `run`, it is mostly intended to be respected.
-          // If `run` is passing a relative path (failed logic), this catches it.
-          // Let's assume relative to PIPELINE_OUTPUT as fallback? 
-          // OR relative to process.cwd()?
-          // Given the refactor, let's make it relative to the PIPELINE_OUTPUT default if likely.
-          resolvedCwd = path.join(PROJECT_ROOT, "pipeline_workspace/PIPELINE_OUTPUT", cwd || "");
-        }
-      }
-
-      // DEBUG LOGGING
-      logger.info(`[DEBUG] Executing: '${cmd}' with args: [${args.join(", ")}]`);
-      logger.info(`[DEBUG] CWD: ${resolvedCwd}`);
+      // run() resolves every step's cwd to an absolute path (stepCwd).
+      // No echo of the command here: it is the interpolated one, so it would
+      // print the values of the variables it names into the build log.
+      const resolvedCwd = cwd && path.isAbsolute(cwd) ? cwd : path.resolve(PROJECT_ROOT, cwd || "");
 
       // Ensure directory exists
       if (!fs.existsSync(resolvedCwd)) {
@@ -855,36 +882,52 @@ export default class EZPipelineController extends EventEmitter {
       if (buildId) this.activeChildren.set(buildId, child);
       const forget = () => { if (buildId) this.activeChildren.delete(buildId); };
 
-      child.stdout.on("data", data => {
-        logger.info(data.toString().trim());
-      });
+      // Line-buffered, one splitter per stream so stdout and stderr cannot
+      // interleave inside a line.
+      // The last lines it printed, for the failure summary (redacted: they go into the run's record).
+      const tail: string[] = [];
+      const started = Date.now();
+      const write = (stream: "stdout" | "stderr") => (line: string) => {
+        if (line.trim() && !line.startsWith("::ezp")) { tail.push(this.logger.redact(line)); if (tail.length > 8) tail.shift(); }
+        if (logger.out) logger.out(line, stream);
+        else logger.info(stream === "stderr" ? `[STDERR] ${line}` : line);
+      };
+      const outLines = new LineSplitter(write("stdout"));
+      const errLines = new LineSplitter(write("stderr"));
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (d: string) => outLines.push(d));
+      child.stderr.on("data", (d: string) => errLines.push(d));
+      const flushAll = () => { outLines.flush(); errLines.flush(); };
 
-      child.stderr.on("data", data => {
-        // Some tools print info to stderr, so we log as info or warn depending on severity expectation
-        // But for visibility, let's keep it as error or info
-        logger.info(`[STDERR] ${data.toString().trim()}`);
-      });
+      const shellName = typeof shellPath === "string" ? shellPath : useShell ? (process.platform === "win32" ? "cmd.exe" : "/bin/sh") : "(none)";
+      const failed = (message: string, exitCode: number | null, signal: string | null, meaning: string | null) => {
+        const trouble = variablesInTrouble(command, env ?? {});
+        return new CommandFailed(message, {
+          exitCode, signal, meaning, lastLines: tail.slice(-5), command, cwd: resolvedCwd, shell: shellName,
+          durationMs: Date.now() - started, unset: trouble.unset, empty: trouble.empty,
+        });
+      };
 
       child.on("error", (err) => {
+        flushAll();
         forget();
-        logger.error(`[SPAWN ERROR] Failed to start command: ${cmd}`, err);
-        reject(err);
+        reject(failed(`Could not start the step: ${err.message}`, null, null, startMeaning(err, shellName, resolvedCwd)));
       });
 
       child.on("close", (code, signal) => {
+        flushAll();
         forget();
         // A KILLED STEP REPORTS THE SIGNAL, not "exit code null". Node gives a
         // null code when a process died on a signal, and "failed with exit
         // code null" reads as a broken step rather than as the abort somebody
         // just pressed.
         if (signal) {
-          logger.info(`[DEBUG] Command stopped by ${signal}`);
-          reject(new Error(`Command was stopped (${signal})`));
+          reject(failed(`Command was stopped (${signal})`, null, signal, exitMeaning(null, signal)));
           return;
         }
-        logger.info(`[DEBUG] Command finished with code ${code}`);
         if (code === 0) resolve(code);
-        else reject(new Error(`Command failed with exit code ${code}`));
+        else reject(failed(`Command failed with exit code ${code}`, code, null, exitMeaning(code, null)));
       });
     });
   }
@@ -972,33 +1015,42 @@ export default class EZPipelineController extends EventEmitter {
     //check for templates in the k8s folder and replace any ${ENV_VARS} with the value
   }
 
-  public async run(pipelineId: string, existingBuild?: Build, options: {
-    customYaml?: string,
-    customWorkspace?: string,
-    skipClean?: boolean,
-    autoApprove?: boolean,
-    triggeredBy?: string,
-    /**
-     * Variables for THIS RUN ONLY, above every file-based layer.
-     *
-     * Written by a rollback, which is the one case where the instruction is
-     * more specific than any scope: "deploy this exact tag, whatever the
-     * pipeline would have built". They are never persisted, so the next
-     * ordinary run is unaffected.
-     */
-    envOverrides?: Record<string, string>,
-  } = {}) {
+  /**
+   * Run a pipeline. Anything that goes wrong before the first step (a pipeline that will
+   * not parse, a folder that cannot be made) still ends the run as failed, with the
+   * reason in its log: it used to stay "running" with an empty log, the error only in
+   * the server's own output.
+   */
+  public async run(pipelineId: string, existingBuild?: Build, options: RunOptions = {}) {
+    const track: { build?: Build } = { build: existingBuild };
+    try {
+      return await this.runInner(pipelineId, existingBuild, options, track);
+    } catch (e) {
+      const b = track.build;
+      if (b && !b.ended) {
+        const err = e as Error;
+        const say = (text: string, level: "error" | "info") => {
+          const line = this.logger.redact(text);
+          this.buildService.log(b.id, line, null, "system", null, level);
+          this.logger.buildLine({ buildId: b.id, pipelineId: b.target, stepIndex: null, substep: null, stream: "system", level, text: line });
+        };
+        say(`✗ The run could not start its steps: ${err?.message ?? String(e)}`, "error");
+        if (err?.stack && err.name !== "Error") for (const l of err.stack.split("\n").slice(1, 8)) say(`  ${l.trim()}`, "info");
+        this.build_error(b, err instanceof Error ? err : new Error(String(e)));
+        this.emit("build_error", b);
+      }
+      throw e;
+    }
+  }
+
+  private async runInner(pipelineId: string, existingBuild: Build | undefined, options: RunOptions, track: { build?: Build }) {
     let pipeline = this.targets.find(t => t.id === pipelineId);
 
     if (options.customYaml) {
       try {
         const parsed = parse(options.customYaml) as EZPIPELINEYAML;
         // If original pipeline exists, inherit location for resource resolution
-        if (pipeline) {
-          parsed.filePath = pipeline.filePath;
-          parsed.group = pipeline.group;
-        }
-        pipeline = parsed;
+        pipeline = normalizePipeline(parsed, { group: pipeline?.group, filePath: pipeline?.filePath });
       } catch (e) {
         throw new Error(`Failed to parse custom YAML: ${e}`);
       }
@@ -1057,7 +1109,7 @@ export default class EZPipelineController extends EventEmitter {
       : 0;
     const isResume = resumeIndex > 0;
 
-    if (!options.skipClean && !isResume && fs.existsSync(workspaceDir)) {
+    if (!options.skipClean && !options.fromStep && !isResume && fs.existsSync(workspaceDir)) {
       try {
         fs.rmSync(workspaceDir, { recursive: true, force: true });
       } catch (e) {
@@ -1075,12 +1127,38 @@ export default class EZPipelineController extends EventEmitter {
 
     // 2. Track Build
     let build = existingBuild || this.start_build(pipeline);
+    track.build = build;
+
+    // The commit this run is expected to build, known BEFORE it clones: the
+    // watch's sha, or for a manual run the head the pipeline's watch last saw.
+    // Recorded now so a queued, running or failed run can show it; provenance
+    // replaces it with what was really checked out when the run ends.
+    let expectedSha: string | null = null;
+    if (!existingBuild) {
+      try {
+        const watch = DatabaseService.getInstance().getDb()
+          .prepare(`SELECT repo_url, last_sha FROM git_watches WHERE pipeline_target IN (?, ?) AND enabled = 1 ORDER BY id LIMIT 1`)
+          .get(pipeline.id, pipeline.appName ?? pipeline.id) as { repo_url: string; last_sha: string | null } | undefined;
+        expectedSha = options.commitSha ?? watch?.last_sha ?? null;
+        if (expectedSha) {
+          const known = watch ? CommitService.getInstance().cached(watch.repo_url, expectedSha) : null;
+          CommitService.getInstance().attachToBuild(build.id, expectedSha, known ? [known] : []);
+        }
+      } catch (e) {
+        this.logger.warn(`Could not stamp the expected commit on build ${build.id}: ${e}`);
+      }
+    } else {
+      expectedSha = (this.buildService.getBuild(build.id)?.commit_sha as string | null) ?? null;
+    }
 
     // Stamped once, on the build, so it survives approveBuild's resume - which
     // calls run() again with no options. Never cleared here: a resumed build
     // carries the flag it was started with, and a manual run has no option to
     // set it in the first place.
-    if (options.autoApprove) build.autoApprove = true;
+    if (options.autoApprove) {
+      build.autoApprove = true;
+      this.buildService.setAutoApprove(build.id, true);
+    }
     if (options.triggeredBy) {
       build.triggeredBy = options.triggeredBy;
       // The row is already inserted by start_build, so the stamp has to be
@@ -1109,29 +1187,28 @@ export default class EZPipelineController extends EventEmitter {
       }
     };
 
+    // The step the loop below is on, so every line can say which step it
+    // belongs to. null before the first step and after the last.
+    let stepIndex: number | null = null;
+    const substeps = new SubstepTracker((sub) => {
+      this.buildService.saveSubstep(build.id, sub);
+      this.emit("substep", { id: build.id, target: build.target, substep: sub });
+    });
+    const emitLine = (raw: string, level: "info" | "warn" | "error", stream: "stdout" | "stderr" | "system") => {
+      // A marker line moves the substep tree and is not itself output.
+      if (stream !== "system" && substeps.line(raw)) return;
+      // EZPipeline's own messages carry v1's "\n🔧 Step: …" spacing; in a line view that is an empty line.
+      // Command output arrives one line at a time already, and its blank lines are the program's own.
+      const text = this.logger.redact(stream === "system" ? raw.replace(/^\s*\n|\n\s*$/g, "") : raw);
+      this.buildService.log(build.id, text, stepIndex, stream, substeps.current(), level);
+      fileLog(`[${level.toUpperCase()}] ${text}`);
+      this.logger.buildLine({ buildId: build.id, pipelineId: build.target, stepIndex, substep: substeps.current(), stream, level, text });
+    };
     const buildLogger: ILogger = {
-      info: (msg: string) => {
-        const safeMsg = this.logger.redact(msg);
-        this.logger.info(msg); // Logger handles its own redaction, but broadcast needs safe? info() calls redact inside.
-        // Wait, Logger.info calls winston.info(redact(msg)). So passing RAW msg is correct for .info().
-        // BUT buildService.log and fileLog take RAW strings. They need help.
-
-        this.buildService.log(build.id, safeMsg);
-        fileLog(`[INFO] ${safeMsg}`);
-      },
-      warn: (msg: string) => {
-        const safeMsg = this.logger.redact(msg);
-        this.logger.warn(msg);
-        this.buildService.log(build.id, safeMsg);
-        fileLog(`[WARN] ${safeMsg}`);
-      },
-      error: (msg: string, err?: any) => {
-        const fullMsg = `${msg} ${err ? err.toString() : ''}`;
-        const safeMsg = this.logger.redact(fullMsg);
-        this.logger.error(msg, err);
-        this.buildService.log(build.id, safeMsg);
-        fileLog(`[ERROR] ${safeMsg}`);
-      }
+      info: (msg: string) => emitLine(msg, "info", "system"),
+      warn: (msg: string) => emitLine(msg, "warn", "system"),
+      error: (msg: string, err?: any) => emitLine(err ? `${msg} ${err instanceof Error ? err.message : String(err)}` : msg, "error", "system"),
+      out: (text: string, stream: "stdout" | "stderr") => emitLine(text, "info", stream),
     };
 
     // 4. Resource & Env Setup
@@ -1246,8 +1323,10 @@ export default class EZPipelineController extends EventEmitter {
           // length floor is raised because a short value cannot carry much
           // secret and matches far too much prose.
           const SECRET_KEY = /(SECRET|PASSWORD|PASSWD|TOKEN|_KEY|APIKEY|API_KEY|CREDENTIAL|PRIVATE|SESSION|SALT|CERT|_PAT$|^PAT_)/i;
+          // The name rule, plus anything marked `# @secret` in the file (services/EnvLayers.ts).
+          const marked = new Set(readEnv(p).filter((v) => v.secret).map((v) => v.key));
           const secrets = Object.entries(envConfig)
-            .filter(([k, v]) => SECRET_KEY.test(k) && v.length >= 8)
+            .filter(([k, v]) => (SECRET_KEY.test(k) || marked.has(k)) && v.length >= 8)
             .map(([, v]) => v);
           this.logger.registerSecrets(secrets);
 
@@ -1306,9 +1385,6 @@ export default class EZPipelineController extends EventEmitter {
       resourceEnv['ENV_FILE'] = envFilePath;
     }
 
-    // apply env variables to any k8s yaml (blocking non-async)
-    this.processK8Templates();
-
     buildLogger.info(
       `\n🚀 Running pipeline: ${pipeline.appName} (${pipeline.version}) - ${pipeline.description}`
     );
@@ -1342,10 +1418,67 @@ export default class EZPipelineController extends EventEmitter {
     this.emit("build_start", build);
 
 
+    const fromIdx = options.fromStep && !isResume ? pipeline.steps.findIndex((s) => s.name === options.fromStep) : -1;
+    // An absolute cwd is taken as written; joining it onto the workspace made
+    // "/srv/app" mean "<workspace>/srv/app", which nobody writing it meant.
+    const stepCwd = (cwd: string | undefined, fallback: string) =>
+      !cwd ? fallback : cwd === 'root' ? PROJECT_ROOT : path.isAbsolute(cwd) ? cwd : path.join(workspaceDir, cwd);
+
+    // A step made of `steps:` runs its children in order, each in its parent's
+    // cwd and env unless it sets its own. A leaf runs its command; markers it
+    // prints open substeps under it, and close with it.
+    const runTree = async (node: Step, nodePath: string, cwd: string, env: NodeJS.ProcessEnv, shell?: string): Promise<void> => {
+      if (!node.steps?.length) {
+        let ok = false;
+        try {
+          await this.runCommandLive(node.run, buildLogger, cwd, env, node.shell ?? shell, build.id);
+          ok = true;
+        } catch (e) {
+          // The details go in the log here, at the level that ran the command, under its output.
+          if (e instanceof CommandFailed && !e.logged && !build.isAborted) {
+            const sub = nodePath.includes('.');
+            if (sub) { e.detail.substep = nodePath; e.detail.substepName = node.name; }
+            const { headline, lines } = failureLines(sub ? `Substep ${nodePath} "${node.name}"` : `Step "${node.name}"`, e.detail, String(env.PATH ?? ''));
+            buildLogger.error(headline);
+            for (const l of lines) buildLogger.info(l);
+            e.logged = true;
+          }
+          throw e;
+        } finally {
+          substeps.closeMarkers(ok);
+        }
+        return;
+      }
+      for (let j = 0; j < node.steps.length; j++) {
+        const child = node.steps[j];
+        const childPath = `${nodePath}.${j + 1}`;
+        if (build.isAborted) throw new Error('Build was aborted');
+        substeps.enter(childPath);
+        buildLogger.info(`▸ ${childPath} ${child.name}`);
+        try {
+          await runTree(child, childPath, stepCwd(child.cwd, cwd), { ...env, ...(child.env ?? {}) }, node.shell ?? shell);
+          substeps.leave(childPath, true);
+        } catch (e) {
+          substeps.leave(childPath, false);
+          if (!child.continueOnError) throw e;
+          buildLogger.warn(`⚠️ ${childPath} ${child.name} failed; carrying on (continueOnError)`);
+        }
+      }
+    };
+
     // Main Pipeline Magic
     for (let i = 0; i < pipeline.steps.length; i++) {
       const currentStep = pipeline.steps[i];
+      stepIndex = i;
       try {
+        if (fromIdx > 0 && i < fromIdx) {
+          if (!build.stepTimings) build.stepTimings = {};
+          build.stepTimings[currentStep.name] = { start: Date.now(), end: Date.now(), duration: 0, status: 'skipped' } as any;
+          this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
+          buildLogger.info(`⏭️ Skipping '${currentStep.name}': this run starts at '${options.fromStep}'`);
+          continue;
+        }
+
         // Abort build check
         if (build.isAborted === true) {
           build.ended = new Date();
@@ -1367,11 +1500,7 @@ export default class EZPipelineController extends EventEmitter {
         }
 
         // Determine CWD for step
-        let currentCwd = workspaceDir;
-        if (currentStep.cwd) {
-          if (currentStep.cwd === 'root') currentCwd = PROJECT_ROOT; // Use PROJECT_ROOT for 'root'
-          else currentCwd = path.join(workspaceDir, currentStep.cwd);
-        }
+        const currentCwd = stepCwd(currentStep.cwd, workspaceDir);
 
         // Update build info
         build.activeStep = currentStep.name;
@@ -1396,7 +1525,9 @@ export default class EZPipelineController extends EventEmitter {
         this.emit("progress", build);
 
         buildLogger.info(
-          `\n🔧 Step: ${currentStep.name} -> ${currentCwd}> cmd: "${currentStep.run}"`
+          currentStep.steps?.length
+            ? `\n🔧 Step: ${currentStep.name} -> ${currentCwd}> ${currentStep.steps.length} substeps`
+            : `\n🔧 Step: ${currentStep.name} -> ${currentCwd}> cmd: "${currentStep.run}"`
         );
 
         // Prepare environment variables for the step
@@ -1434,6 +1565,7 @@ export default class EZPipelineController extends EventEmitter {
           PIPELINE_NAME: pipeline.appName,
           TARGET_NAME: pipeline.id, // Legacy support, aliased to ID
           BUILD_ID: build.id.toString(),
+          ...(expectedSha ? { EZP_COMMIT_SHA: expectedSha } : {}),
           // Force headless/non-interactive mode for all commands
           GIT_TERMINAL_PROMPT: '0',           // Disable Git interactive prompts
           GIT_ASKPASS: 'echo',                // Prevent Git credential helper dialogs
@@ -1491,7 +1623,7 @@ export default class EZPipelineController extends EventEmitter {
               `⏭️ Auto-approving '${currentStep.name}': this run was triggered by a git watch with auto-approve enabled.`
             );
             setImmediate(() => {
-              void this.approveBuild(build.id).catch((e) =>
+              void this.approveBuild(build.id, { username: 'auto-approve (git watch)', userId: null, auto: true }).catch((e) =>
                 buildLogger.error(`Auto-approval failed: ${e}`)
               );
             });
@@ -1499,15 +1631,15 @@ export default class EZPipelineController extends EventEmitter {
           return; // Pause execution, controller will resume via approveBuild
         }
 
-        // Execute Step
-        await this.runCommandLive(
-          currentStep.run,
-          buildLogger, // Pass proxy logger
-          currentCwd, // Pass calculated absolute path
-          envVars,
-          currentStep.shell,
-          build.id // so abort() can reach this step's process group
-        );
+        // Execute Step (and its substeps, if it has any)
+        substeps.beginStep(i, currentStep);
+        try {
+          await runTree(currentStep, String(i + 1), currentCwd, envVars, currentStep.shell);
+          substeps.endStep(true);
+        } catch (e) {
+          substeps.endStep(false);
+          throw e;
+        }
 
         // End Timing Success
         if (build.stepTimings && build.stepTimings[currentStep.name]) {
@@ -1540,11 +1672,44 @@ export default class EZPipelineController extends EventEmitter {
           this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
         }
 
-        this.build_error(build, error as Error);
+        const failure = error instanceof CommandFailed ? error.detail : null;
+        if (failure && build.stepTimings?.[currentStep.name]) {
+          // On the step, so the run page can say why without reading the log.
+          (build.stepTimings[currentStep.name] as any).failure = {
+            exitCode: failure.exitCode, signal: failure.signal, meaning: failure.meaning, substep: failure.substep, substepName: failure.substepName,
+            lastLines: failure.lastLines, unset: failure.unset, empty: failure.empty,
+            cwd: failure.cwd, shell: failure.shell, durationMs: failure.durationMs,
+            // As the pipeline wrote it (names, not values); a long script is cut, the log has it whole.
+            command: failure.command.trim().split('\n').slice(0, 3).join('\n').slice(0, 400),
+            commandLines: failure.command.trim().split('\n').length,
+          };
+          this.buildService.updateBuild(build.id, { stepTimings: build.stepTimings });
+        }
+        const err = error as Error;
+        this.build_error(build, failure && !build.isAborted ? Object.assign(new Error(failureSummary(currentStep.name, failure)), { stack: err.stack }) : err);
         fs.writeFileSync(metaFilePath, JSON.stringify(build, null, 2)); // Persist error state
         this.emit("build_error", build);
-        buildLogger.error(`❌ Error in step '${currentStep.name}':`, error);
+        if (build.isAborted) {
+          buildLogger.warn(`Stopped: the run was cancelled during "${currentStep.name}".`);
+        } else if (!(error instanceof CommandFailed && error.logged)) {
+          // Not a command's exit (that block is already above): a gate, an action, a file the
+          // runner could not read, or a fault in EZPipeline itself. Its own words, and for a
+          // fault the stack, which is what a bug report needs.
+          buildLogger.error(`✗ Step "${currentStep.name}" failed: ${err?.message ?? String(error)}`);
+          if (err?.stack && err.name !== 'Error' && !(error instanceof CommandFailed)) {
+            for (const l of err.stack.split('\n').slice(1, 8)) buildLogger.info(`  ${l.trim()}`);
+          }
+        }
+        const runFor = Math.round((Date.now() - new Date(build.started).getTime()) / 1000);
+        if (!build.isAborted) {
+          buildLogger.info(currentStep.continueOnError
+            ? `"${currentStep.name}" may fail (continueOnError), so the run carries on.`
+            : `The run stopped at step ${i + 1} of ${pipeline.steps.length} after ${runFor}s.`);
+        }
         if (!currentStep.continueOnError) {
+          // A failed run records what it was made of too: "which commit broke
+          // it" is the first question about a failure.
+          this.recordProvenance(build.id, build.target, workspaceDir, buildLogger);
           return; // Stop execution if continueOnError is not true
         }
       }
@@ -1560,10 +1725,6 @@ export default class EZPipelineController extends EventEmitter {
       this.recordProvenance(build.id, build.target, workspaceDir, buildLogger);
 
       this.emit("build_complete", build);
-    }
-
-    if (pipeline.kubernetes) {
-      this.deployToKubernetes(pipeline.kubernetes);
     }
   }
 
@@ -1757,32 +1918,29 @@ export default class EZPipelineController extends EventEmitter {
     return rollbackPipeline;
   }
 
-  private deployToKubernetes(k8s: KubernetesConfig) {
-    try {
-      this.logger.info(
-        `\n⚙️ Deploying to Kubernetes namespace: ${k8s.namespace}`
-      );
-      if (k8s.context) {
-        execSync(`kubectl config use-context ${k8s.context}`, {
-          stdio: "inherit",
-        });
-      }
-      execSync(`kubectl apply -f ${k8s.deploymentFile}`, { stdio: "inherit" });
-      if (k8s.serviceFile) {
-        execSync(`kubectl apply -f ${k8s.serviceFile}`, { stdio: "inherit" });
-      }
-      this.logger.info(`✅ Kubernetes deployment complete.`);
-    } catch (error) {
-      this.logger.error(`❌ Kubernetes deployment failed:`, error);
-    }
-  }
-
-  public async approveBuild(buildId: string) {
+  /**
+   * Pass the approval gate a paused build is waiting at, and carry on.
+   *
+   * Refuses (ApprovalError) unless the build is paused AT AN APPROVAL STEP:
+   * this used to resume whatever it was given, so approving a running or
+   * finished build re-ran the rest of it from its active step.
+   */
+  public async approveBuild(buildId: string, by: { username: string; userId: number | null; auto?: boolean } = { username: 'unknown', userId: null }) {
     const buildData = this.buildService.getBuild(buildId);
-    if (!buildData) throw new Error("Build not found");
+    if (!buildData) throw new ApprovalError("not_found", "No such build.");
 
     const pipeline = this.targets.find(t => t.id === buildData.target);
-    if (!pipeline) throw new Error("Pipeline not found");
+    if (!pipeline) throw new ApprovalError("not_found", "That build's pipeline no longer exists.");
+
+    const gate = pipeline.steps.find(s => s.name === buildData.active_step);
+    if (buildData.status !== 'paused' || !gate || gate.type !== 'approval') {
+      throw new ApprovalError("not_paused", "This build is not waiting for approval.");
+    }
+    if (!this.buildService.claimPaused(buildId)) {
+      throw new ApprovalError("not_paused", "This build was already approved.");
+    }
+    const approval = { step: gate.name, by: by.username, userId: by.userId, at: new Date().toISOString(), auto: !!by.auto };
+    this.buildService.addApproval(buildId, approval);
 
     // Construct Build Object
     const build: Build = {
@@ -1796,8 +1954,11 @@ export default class EZPipelineController extends EventEmitter {
       ended: buildData.ended_at ? new Date(buildData.ended_at) : undefined,
       steps: pipeline.steps.map(s => s.name),
       isAborted: buildData.status === 'aborted',
-      stepTimings: buildData.step_timings ? JSON.parse(buildData.step_timings) : {}
+      stepTimings: buildData.step_timings ? JSON.parse(buildData.step_timings) : {},
+      autoApprove: buildData.auto_approve === 1,
+      triggeredBy: buildData.triggered_by ?? undefined,
     };
+    this.emit("build_approved", { ...build, status: 'running', approval });
 
     // Find active step index
     const activeIndex = pipeline.steps.findIndex(s => s.name === build.activeStep);

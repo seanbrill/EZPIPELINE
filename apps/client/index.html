@@ -1,12 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="classic">
 
 <head>
   <meta charset="UTF-8" />
-  <title>EZPIPELINE</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Simple, powerful CI/CD pipeline management." />
+  <title>EZPipeline</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Self-hosted CI/CD: pipelines in YAML, steps as shell commands, logs live in your browser." />
+  <meta name="theme-color" content="#09090b" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <!-- The saved theme goes on <html> before the first paint. Without this the
+       page draws in the default theme and then switches when React mounts,
+       which on the light theme is a dark flash on every load. -->
+  <script>
+    try {
+      var t = localStorage.getItem('theme');
+      if (t === 'classic' || t === 'midnight' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) { }
+  </script>
 </head>
 
 <body>

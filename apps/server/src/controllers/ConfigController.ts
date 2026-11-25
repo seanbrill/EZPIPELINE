@@ -2,6 +2,7 @@ import * as fs from "fs";
 import path from "path";
 import Logger from "./Logger.js";
 import { parse } from 'yaml';
+import { validateSteps } from '../services/substeps.js';
 import { VersioningService } from "../services/VersioningService.js";
 import { v4 as uuidv4 } from 'uuid';
 
@@ -157,6 +158,17 @@ export class ConfigController {
         }
 
         // Versioning: Backup existing file before overwrite
+        // A pipeline whose steps are the wrong shape is refused before it
+        // replaces one that runs. Unparseable YAML is left to the loader, as before.
+        if (type === "yaml" && /\.ya?ml$/i.test(fullPath)) {
+            let doc: any = null;
+            try { doc = parse(content.split('\n---')[0]); } catch { doc = null; }
+            if (doc && typeof doc === "object" && "steps" in doc) {
+                const problems = validateSteps(doc.steps);
+                if (problems.length) throw Object.assign(new Error(`The steps are not valid: ${problems.join("; ")}`), { status: 400, problems });
+            }
+        }
+
         if (fs.existsSync(fullPath)) {
             this.createBackup(fullPath);
         }
@@ -270,14 +282,16 @@ export class ConfigController {
         this.logger.info(`🗑️ File deleted: ${fullPath}`);
     }
 
-    public createPipelineBundle(group: string, name: string, author: string): void {
-        const id = uuidv4();
+    public createPipelineBundle(group: string, name: string, author: string, yaml?: string, givenId?: string): void {
+        const id = givenId ?? uuidv4();
         // Sanitize group path to prevent traversal, but allow multiple levels
         // Remove .. and leading/trailing slashes
         const safeGroup = group ? group.replace(/\.\./g, '').replace(/^\/+|\/+$/g, '') : '';
 
         // Bundle Directory: data/pipelines/<Group>/<Name>
         const bundleDir = path.join(this.rootDir, safeGroup, name);
+        const root = path.resolve(this.rootDir);
+        if (!path.resolve(bundleDir).startsWith(root + path.sep)) throw new Error("A pipeline goes inside the pipelines folder.");
 
         if (fs.existsSync(bundleDir)) {
             throw new Error(`Pipeline '${name}' already exists in group '${group}'`);
@@ -291,12 +305,11 @@ export class ConfigController {
         fs.writeFileSync(path.join(bundleDir, '.pipeline'), '', 'utf-8');
 
         // Config
-        const yamlContent = `
+        const yamlContent = yaml ?? `
 id: ${id}
-appName: ${name}
+appName: ${JSON.stringify(name)}
 version: 1.0.0
 description: Created via UI
-author: ${author}
 
 steps:
   - name: Start
@@ -305,27 +318,10 @@ steps:
         fs.writeFileSync(path.join(bundleDir, 'pipeline.yaml'), yamlContent, 'utf-8');
 
         // Env
-        const envContent = `# Environment variables for ${name}\nAPP_ENV=production`;
+        const envContent = `# Environment variables for ${name.replace(/[\r\n]/g, ' ')}\n`;
         fs.writeFileSync(path.join(bundleDir, '.env'), envContent, 'utf-8');
 
         this.logger.info(`✨ Created pipeline bundle: ${bundleDir}`);
-    }
-
-    public copyPipelineBundle(sourceId: string, targetGroup: string, newName: string, author: string): void {
-        // 1. Find Source Pipeline Path
-        // We need to search for the directory containing the pipeline.yaml with the matching ID
-        // Or finding the path from the ID using a helper (EZPipelineController might know, or we traverse).
-        // Since ConfigController is file-system based and doesn't keep a memory map (EZPipelineController does), 
-        // we might rely on the frontend passing the 'sourcePath' is safer/faster if available.
-        // BUT, the request might only have ID.
-        // Let's assume frontend passes 'sourcePath' or we integrate with EZPipelineController logic.
-        // However, this class shouldn't depend on EZPipelineController (circular dependency?).
-        // Actually, routes/index.ts can fetch the pipeline object from EZPipelineController to get the path!
-
-        // Wait, for this method signature, I'll take 'sourcePath'.
-        // The API handler will resolve ID -> Path.
-        // So change signature to take sourcePath.
-        throw new Error("Use copyPipelineBundleFromPath instead");
     }
 
     public copyPipelineBundleFromPath(sourcePath: string, targetGroup: string, newName: string, author: string): void {

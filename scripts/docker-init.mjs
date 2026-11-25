@@ -32,21 +32,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 //   apps/server/data      better-sqlite3 opens app.db with SQLITE_CANTOPEN if
 //                         the directory is missing, which reads like a
 //                         permissions problem rather than a missing folder.
-//   pipeline_workspace/PIPELINE_OUTPUT
-//                         where EZPipelineController writes generated yaml and
-//                         build artifacts. Created lazily in some code paths
-//                         and not others.
-//   apps/server/ai_sandbox
-//                         ClaudeManager writes INSTRUCTIONS.md here on the
-//                         first AI request.
 const directories = [
   "apps/server/logs",
   "apps/server/data",
   "apps/server/data/pipelines",
   "apps/server/data/plugins",
   "apps/server/data/global",
-  "apps/server/pipeline_workspace/PIPELINE_OUTPUT",
-  "apps/server/ai_sandbox",
 ];
 
 for (const relative of directories) {

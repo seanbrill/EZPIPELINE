@@ -5,12 +5,9 @@ pipelines", "add a build step to staging", "which env vars does test need". It
 reaches your instance through a fixed set of tools rather than by poking at
 files, and this page is mostly about where the edges of that set are.
 
-> **This page was rewritten after the engine changed.** The assistant used to
-> shell out to the Claude Code CLI. It now calls the Anthropic API directly
-> from `apps/server/src/services/AnthropicAssistant.ts`. Everything below
-> describes the new arrangement. [What changed, and why it matters](#what-changed-and-why-it-matters)
-> covers the difference, because the old setup made a safety promise that was
-> not kept and the new one is the reason it now is.
+The assistant calls the Anthropic API from
+`apps/server/src/services/AnthropicAssistant.ts`. It acts for the person
+using it, with their permissions; see [What it cannot do](#what-it-cannot-do).
 
 ---
 
@@ -48,14 +45,10 @@ curl -s -H "Authorization: Bearer $TOKEN" localhost:5001/api/ai/status
 ```
 
 ```json
-{"installed":true,"loggedIn":true,"engine":"anthropic-api",
- "configured":true,"model":"claude-opus-5","message":null}
+{"engine":"anthropic-api","configured":true,"model":"claude-opus-5","message":null}
 ```
 
-Read `configured`, `engine` and `model`. `installed` and `loggedIn` are kept
-only because the current client switches on those two names; nothing is
-installed at runtime any more and nobody logs in. `installed` is now always
-`true` and `loggedIn` just mirrors `configured`.
+`configured: false` comes with a `message` saying which variable to set.
 
 ---
 
@@ -109,48 +102,30 @@ direction.
 
 ---
 
-## What changed, and why it matters
+## What it cannot do
 
-The previous engine spawned the Claude Code CLI like this:
+The assistant has no shell and no filesystem access of its own. Every effect
+it can have is one of the eleven tools above, each of which validates its own
+arguments. File paths go through a containment check that rejects absolute
+paths, rejects any `..` segment, and checks again after resolving that the
+result is still inside the pipelines directory.
 
-```
-node <sandbox>/node_modules/@anthropic-ai/claude-code/cli.js \
-  --permission-mode bypassPermissions \
-  --dangerously-skip-permissions \
-  -p "<your message>"
-```
+Every tool call is also checked against the person using the assistant. A
+conversation belongs to whoever started it, and each tool checks that
+person's grants on the pipeline it touches:
 
-with `cwd` set to `apps/server/ai_sandbox`.
+| Tool | Needs, on that pipeline, with Use Claude |
+|---|---|
+| `list_pipelines`, `get_build_history` | `view` (others are left out) |
+| `read_yaml_config`, `update_yaml_config` | `editYaml` |
+| `get_env_keys` | `editEnv` or `editYaml` |
+| `set_env_variable` | `editEnv` |
+| `get_global_env_keys` / `set_global_env_variable` | `view` / `editEnv` on `global-env` |
+| `get_global_resources` | admin |
 
-Earlier versions of this page described that as "strict sandboxing", said the
-agent was "confined to the `ai_sandbox` directory" and "cannot traverse up
-(`../../`) to read system files", and called its access to code "read-only".
-
-**None of that was enforced.** `cwd` is where relative paths start, not a
-jail; the CLI's `Read` and `Bash` tools take absolute paths, and both flags
-above exist to remove the CLI's own confirmations. The process ran as the
-server's user with the server's access to the disk, the network, the SQLite
-database and every pipeline `.env` on the box. The only thing standing between
-the model and any of that was a paragraph in
-`apps/server/ai_sandbox/INSTRUCTIONS.md` asking it not to. That is a good
-instruction, and it was probably obeyed most of the time. It was not a
-boundary and should never have been documented as one.
-
-The new engine has no shell and no filesystem primitive. Every effect it can
-have is one of the eleven tools above, each of which validates its own
-arguments. In particular, file paths go through a containment check that
-rejects absolute paths, rejects any `..` segment, and re-verifies after
-resolution that the result is still inside the pipelines directory.
-
-So the promise this page used to make is now actually kept, by code rather
-than by wording. That is the point of the change.
-
-### What is left over
-
-`ClaudeManager.ts` is still in the tree but nothing imports it any more. So is
-`ai_sandbox/`, with the old CLI install and `INSTRUCTIONS.md` in it. Neither
-is loaded. They can be removed whenever their owner wants to; that is a change
-in `apps/`, which this page's author does not own.
+A file outside every pipeline's folder is for admins only. So "it cannot read
+files outside your pipelines" and "it cannot do what you cannot" are enforced
+by code, not asked of the model in a prompt.
 
 ---
 
@@ -159,10 +134,7 @@ in `apps/`, which this page's author does not own.
 1. Open the assistant from the terminal icon at the bottom right.
 2. Ask it something.
 
-That is it. There is no initialize step and no authentication step. If you
-press the old **Initialize Agent** button it answers with a sentence saying
-there is nothing to install and that the assistant is ready, rather than
-pretending to do work.
+That is it. There is no initialize step and no authentication step.
 
 The window is draggable, and has controls to clear the transcript, copy it and
 restart the conversation. Restarting is now cheap: it clears an array in the
@@ -176,7 +148,6 @@ server process rather than killing and respawning anything.
 |---|---|---|
 | GET | `/api/ai/status` | The shape above |
 | POST | `/api/ai/action` | `{action, socketId, input?}` |
-| POST | `/api/ai/setup` | Reports whether a key is configured |
 
 `action` is one of:
 
@@ -185,7 +156,6 @@ server process rather than killing and respawning anything.
 | `spawn` | Start or restart the conversation. Returns `{status:"started"}` |
 | `input` | Send a message. Returns `202 {status:"streaming"}` immediately |
 | `kill` | Discard the conversation. Emits `claude-exit` |
-| `install` / `login` | Explains that neither exists any more |
 
 `socketId` is **required** on every action. The answer streams over Socket.IO,
 so a request that does not say which socket to stream to is answered with

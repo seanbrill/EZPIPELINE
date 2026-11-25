@@ -1,0 +1,63 @@
+/* The app's own pages (first launch, About): the kit's tokens (design sheet f1), Classic theme. */
+@font-face{font-family:Geist;src:url(fonts/geist.woff2) format("woff2");font-weight:100 900}
+@font-face{font-family:"Geist Mono";src:url(fonts/geist-mono.woff2) format("woff2");font-weight:100 900}
+:root{--bg:#09090b;--bg-2:#0c0c0f;--surface:#121215;--surface-2:#18181c;--surface-3:#202025;--line:#232328;--line-2:#2e2e35;--line-3:#3f3f46;--text:#f4f4f5;--text-2:#a1a1aa;--text-3:#71717a;--primary:#10b981;--primary-hi:#34d399;--primary-ink:#022c22;--primary-soft:rgba(16,185,129,.12);--primary-line:rgba(16,185,129,.38);--run:#38bdf8;--warn:#fbbf24;--fail:#fb7185;--fail-soft:rgba(251,113,133,.12);--fail-line:rgba(251,113,133,.35);--glow:0 0 0 1px var(--primary-line),0 8px 32px -6px rgba(16,185,129,.35);--font:Geist,system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased;user-select:none;cursor:default;display:flex;flex-direction:column}
+.drag{height:38px;flex:none;-webkit-app-region:drag;display:flex;align-items:center;justify-content:center;color:var(--text-2);font-size:12.5px;font-weight:500;border-bottom:1px solid var(--line);background:var(--bg-2)}
+body:not(.mac) .drag{display:none}
+.center{flex:1;display:flex;align-items:center;justify-content:center;padding:32px;overflow:auto}
+.mark{display:block}
+h1{font-size:32px;line-height:1.15;margin:16px 0 6px;font-weight:600;letter-spacing:-.02em}
+h1.sm{font-size:24px}
+.lede{color:var(--text-2);font-size:15px;margin:0}
+.mono{font-family:var(--mono)}
+.faint{color:var(--text-3)}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}
+@media (max-width:720px){.choice{grid-template-columns:1fr}}
+.opt{all:unset;box-sizing:border-box;border:1px solid var(--line-2);border-radius:14px;background:var(--surface);padding:18px;display:flex;flex-direction:column;gap:8px;position:relative;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.opt:focus-visible{outline:2px solid var(--primary-hi);outline-offset:2px}
+.opt[aria-checked=true]{border-color:var(--primary-line);box-shadow:var(--glow);background:linear-gradient(180deg,rgba(16,185,129,.06),transparent 60%),var(--surface)}
+.opt h3{margin:0;font-size:15px;font-weight:600}
+.opt p{margin:0;color:var(--text-2);font-size:13.5px;line-height:1.5}
+.radio{position:absolute;top:16px;right:16px;width:18px;height:18px;border-radius:50%;border:1.5px solid var(--line-3)}
+.opt[aria-checked=true] .radio{border-color:var(--primary);box-shadow:inset 0 0 0 4px var(--surface),inset 0 0 0 9px var(--primary)}
+.ico{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:var(--surface-3);color:var(--text-2)}
+.opt[aria-checked=true] .ico{background:var(--primary-soft);color:var(--primary-hi)}
+.opt ul{margin:4px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--text-3)}
+.opt li{display:flex;gap:7px;align-items:flex-start}
+.foot{display:flex;align-items:center;gap:10px;margin-top:24px;flex-wrap:wrap}
+.grow{flex:1}
+.btn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:8px;font:500 14px var(--font);cursor:pointer;color:var(--text);white-space:nowrap}
+.btn:focus-visible{outline:2px solid var(--primary-hi);outline-offset:2px}
+.btn[disabled]{opacity:.5;cursor:default}
+.btn-lg{height:44px;padding:0 20px;font-size:15px}
+.btn-sm{height:30px;padding:0 10px;font-size:13px}
+.btn-primary{background:var(--primary);color:var(--primary-ink);box-shadow:var(--glow)}
+.btn-primary:hover:not([disabled]){background:var(--primary-hi)}
+.btn-secondary{background:var(--surface-3);border:1px solid var(--line-2)}
+.btn-ghost{color:var(--text-2)}
+.btn-ghost:hover{color:var(--text);background:var(--surface-2)}
+.field{display:flex;flex-direction:column;gap:6px;margin-top:18px}
+.label{font-size:13px;font-weight:500;color:var(--text-2)}
+.input{all:unset;box-sizing:border-box;height:40px;padding:0 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--bg-2);font:13.5px var(--mono);color:var(--text);user-select:text;cursor:text}
+.input:focus{border-color:var(--primary-line);box-shadow:0 0 0 3px var(--primary-soft)}
+.found,.err{display:flex;gap:12px;align-items:center;border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13.5px}
+.found{border:1px solid var(--primary-line);background:var(--primary-soft)}
+.err{border:1px solid var(--fail-line);background:var(--fail-soft);align-items:flex-start}
+.err svg{color:var(--fail);flex:none;margin-top:2px}
+.tile{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:rgba(16,185,129,.18);color:var(--primary-hi);flex:none}
+.chk{display:flex;flex-direction:column;gap:10px;margin-top:18px}
+.chk div{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--text-3)}
+.chk .done{color:var(--primary-hi)}
+.chk .now{color:var(--text)}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid var(--line-3);border-top-color:var(--run);animation:spin .8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.bar{height:6px;border-radius:999px;background:var(--surface-3);overflow:hidden;margin-top:22px}
+.bar i{display:block;height:100%;border-radius:inherit;background:var(--primary);transition:width .4s}
+.badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:999px;font-size:12px;font-weight:500;border:1px solid var(--line-2);color:var(--text-2)}
+.badge.ok{color:var(--primary-hi);border-color:var(--primary-line);background:var(--primary-soft)}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){.spin{animation:none;border-top-color:var(--line-3)}.bar i{transition:none}}

@@ -3,12 +3,11 @@
 Symptoms, what causes them, and what to do. Grouped by where the symptom
 shows up.
 
-Two corrections up front, because they invalidate a lot of the advice that
-used to be on this page:
+Two facts that save time:
 
-- **The database is `apps/server/data/app.db`.** Not `ezpipeline.db`. Every
-  `sqlite3` command aimed at that name silently created a new empty file and
-  told you nothing was there.
+- **The database is `app.db` in the data folder** (`apps/server/data/app.db`
+  unless you moved it). `sqlite3` aimed at a wrong name creates a new empty
+  file and shows you nothing.
 - **Build progress is SSE, not WebSocket.** If build output is not appearing,
   the thing to check is `/api/logs-stream`, not Socket.IO.
 
@@ -71,7 +70,7 @@ started the server another way.
 
 ```bash
 lsof -ti:5001 | xargs kill -9
-lsof -ti:5000 | xargs kill -9
+lsof -ti:5173 | xargs kill -9
 ```
 
 Or change `ports` in `ezpipeline.config.json`. Change it **there**, not in
@@ -114,9 +113,9 @@ those two, never `app.db` itself.
 
 ### Everyone was logged out after a restart
 
-Expected if `JWT_SECRET` is unset: the fallback is a constant, so that is not
-it. If you just **set** `JWT_SECRET` for the first time, or changed it, every
-existing token became invalid. That is correct behaviour.
+`JWT_SECRET` changed. Every token signed with the old one stopped working,
+which is correct: everyone signs in again. In development with no
+`JWT_SECRET`, the secret is fixed and a restart signs nobody out.
 
 ---
 
@@ -134,24 +133,16 @@ into the bundle at build time by a `define` in `vite.config.ts` reading
 So the fix is to make `ezpipeline.config.json` and your environment agree, and
 then rebuild or restart Vite so the new value is compiled in.
 
-### An API call returned HTML
+### An API call answered 404 `not_found`
 
-The path is wrong. The SPA catch-all serves `index.html` with status **200**
-for any unrecognised GET, so a typo in a URL looks like success.
+The path is wrong, or the method is: the message names both, for example
+`There is no GET /api/whatever.`
 
-```bash
-curl -s -o /dev/null -w "%{http_code} %{content_type}\n" \
-  -H "Accept: application/json" localhost:5001/api/whatever
-```
+### Every request answers 401
 
-With `Accept: application/json` you get an honest `404 {"error":"Not Found"}`.
-Send that header from your client.
-
-### Parsing a 401 or 403 throws
-
-They are `text/plain`, not JSON. The auth middleware uses `res.sendStatus()`,
-so the body is the literal word `Unauthorized` or `Forbidden`. Check
-`content-type` before parsing.
+Your sign-in expired (tokens last 24 hours) or the server's `JWT_SECRET`
+changed. The app sends you to sign in; a script needs a fresh token from
+`POST /api/login`.
 
 ### Build output never appears
 
@@ -171,24 +162,52 @@ terminal. If those are broken but builds are fine, the problem is
 ### The build looks stuck at a step
 
 Check whether the step has `type: approval`. An approval step pauses the build
-and waits for someone to release it, and the pause is **not** published on the
-SSE stream, so the UI shows a build that simply stopped moving. Look at the
-build in the dashboard for an approve control, or:
+until someone with `run` on the pipeline approves it; the run page shows the
+pause and the Approve button. To find paused builds directly:
 
 ```bash
 sqlite3 apps/server/data/app.db \
   "SELECT id, target, status, active_step FROM builds WHERE status='paused';"
 ```
 
-### Every step ran twice
-
-Not your pipeline. `POST /api/run-pipeline` calls the controller's `run()`
-directly and then schedules the same call again inside `setImmediate`. It is a
-bug in `apps/server/src/routes/index.ts`. Nothing you can configure around.
-
 ---
 
 ## Pipelines
+
+### A step failed: where to look
+
+The run page opens with a card that says why. It names the step (or the
+substep, such as `3.2.1 Push to the registry`) and the exit code, and shows
+the last lines the step printed. It also gives the folder it ran in, the
+shell and the command as the pipeline wrote it. **Jump to the error** opens
+that step's log at the first error line.
+
+The log has the same facts under the step's output:
+
+```
+✗ Step "Deploy" failed: exit code 127
+  meaning  a command was not found. It is not installed on this server, or not on the PATH the step sees.
+  command  kubectl apply -f k8s/
+  folder   /data/pipelines/Web/deploy/workspace
+  shell    /bin/sh
+  ran for  1.2s
+  not set  KUBECONFIG: no env layer sets it, so the shell reads an empty value
+  PATH     /usr/local/bin:/usr/bin:/bin
+```
+
+| You see | It means |
+|---|---|
+| exit code 127 | A command was not found. Install it on the server (or in the Docker image), or add its folder to `PATH`. The block shows the `PATH` the step had. |
+| exit code 126 | The command was found but could not be run: it is not executable (`chmod +x`), or permission was denied. |
+| exit code 137, or stopped by SIGKILL | Killed. If nobody cancelled the run, the system usually ran out of memory. |
+| stopped by SIGTERM | The run was cancelled, or something asked the process to stop. |
+| could not start | The shell or the folder does not exist. A `shell:` must be an absolute path on the server. |
+| not set / empty | The command reads a variable that no env layer sets, or that is set to nothing. Set it on the pipeline's Environment tab, its group, or the global env. A variable the script assigns itself is not listed. |
+
+Values are never shown: the command is printed as written, with variable
+names, and anything that looks secret is redacted. If a run fails before its
+first step (the pipeline file will not parse, say), the log says so and the
+run is marked failed.
 
 ### A pipeline does not appear
 
@@ -211,10 +230,11 @@ loading. `GET /api/targets` filters by `can_view`.
 
 ### A step fails on a missing directory
 
-`cwd` is relative to the pipeline's `workspace/`, which starts empty. A step
-that enters a checkout must run after the step that creates it.
+A relative `cwd` is relative to the pipeline's `workspace/`, which starts
+empty. A step that enters a checkout must run after the step that creates it.
 
-And `cwd: root` is not the repository root. It resolves to `apps/server`.
+And `cwd: root` is not the repository root. It is the server's own folder;
+the editor marks it.
 
 ### `cd` did not carry to the next step
 
@@ -235,21 +255,22 @@ Then check, in this order:
 
 1. Is there a `.env` in the pipeline directory? The file is found **by name**,
    as `.env` or `.env.<pipeline id>`.
-2. The `env:` field in your YAML is not consulted. If you renamed the file and
-   updated `env:` expecting that to work, it does not. Rename it back to
-   `.env`.
+2. If you renamed the file, rename it back to `.env`. A file name in the YAML
+   does not change which file is read; the editor marks an `env:` field as
+   unused.
 3. `${VAR}` is the interpolated form; `$VAR` is left to the shell.
 4. Some names cannot be overridden by a step at all: `CI`, `TERM`, `BUILD_ID`,
    `PIPELINE_ID`, `PIPELINE_NAME`, `TARGET_NAME` and the git prompt
    suppressors are applied after step `env`. See
    [Pipeline schema](pipeline-schema.md#environment-variable-precedence).
 
-### A variable has a value from a different pipeline
+### A variable has the wrong value
 
-Real, and not your mistake. Loading a pipeline's `.env` assigns onto the
-server's own `process.env`, so values persist after the build and leak into
-the next one. Restarting the server clears them. It is a bug in
-`EZPipelineController.run()`.
+The same name is set in more than one place, and the innermost wins: the
+pipeline's `.env` beats its group's `.env.group`, which beats the global
+`.env.global`. The Environment tab shows each variable with the layer it
+comes from. See
+[Pipeline schema](pipeline-schema.md#environment-variable-precedence).
 
 ### A step hangs forever
 
@@ -276,22 +297,13 @@ Or a token from the pipeline's `.env`:
 run: git clone https://${GITHUB_TOKEN}@github.com/you/repo.git
 ```
 
-### kubectl ran but nothing deployed
+### The Kubernetes step failed
 
-The `kubernetes` block runs `kubectl apply -f` and **catches every error into
-a log line**. A failed apply does not fail the build. Check
-`apps/server/logs/app.log` for the kubectl output.
-
-It also does not wait for rollout and does not report status, whatever older
-documentation claimed. If you want the build to depend on the rollout, add an
-ordinary step:
-
-```yaml
-- name: Wait for rollout
-  run: kubectl rollout status deployment/my-app -n production --timeout=5m
-```
-
-See [Kubernetes](kubernetes.md).
+A `kubernetes:` block becomes the pipeline's last step, named "Deploy to
+Kubernetes", and it is an ordinary step: its `kubectl` output is in the run's
+log and a failed apply or rollout fails the build. Check that the server's
+user has a kubeconfig with the `context` you named, and that the files exist
+in the workspace when the step runs. See [Kubernetes](kubernetes.md).
 
 ---
 
@@ -319,16 +331,16 @@ curl -s localhost:5001/api/auth/config
 A user exists. To start over:
 
 ```bash
-npm run reset -- --menu     # choose 5, Reset Users/Database Only
+npm run reset              # choose 5, Reset Users/Database Only
 ```
 
-Note the `--`. Without it, `npm run reset` performs a Smart Reset immediately,
-with no prompt.
+Or have an admin set a new password for the account:
+`POST /api/users/:id/password`. See [Authentication](authentication.md#resetting-someone-elses-password).
 
 ### Tokens expire too quickly
 
-24 hours, hardcoded, no refresh. Changing it means editing the `expiresIn`
-values in `routes/index.ts`.
+They last 24 hours, with no refresh, and the app sends you to sign in when one
+runs out. The length is the `expiresIn` in `routes/index.ts`.
 
 ### A user still has access after being deleted
 
@@ -340,10 +352,11 @@ primary admin.
 
 ### Someone saw something they should not have
 
-Likely, and possibly not a misconfiguration. Several routes have no
-permission check at all, including artifact download, rollback, the user list
-and reading anyone's permissions. The full list is in
-[Permissions](permissions.md#where-nothing-is-checked).
+Check what they were granted: `GET /api/users/:id/permissions`, or their row
+in People. A `*` target grants its flags on every pipeline. Admins see
+everything. The audit log (Settings, admins only) shows what each account did.
+[Permissions](permissions.md#which-routes-check-what) lists what each flag
+opens.
 
 ---
 
@@ -402,8 +415,7 @@ sqlite3 apps/server/data/app.db \
 sqlite3 apps/server/data/app.db "VACUUM;"
 ```
 
-The column is `timestamp`. The version of this command that used `created_at`
-errored out, which at least failed loudly.
+The column is `timestamp`.
 
 ### Migration errors on boot
 
@@ -436,15 +448,6 @@ du -sh apps/server/data/pipelines/*/*/versions 2>/dev/null | sort -h
 
 Version artifacts prune themselves past 10 files or 1 GB **per pipeline**, so
 ten pipelines can hold 10 GB legitimately. Workspaces are never pruned.
-
-### The server gets slower over the course of a day
-
-Check the SSE listener leak. The `/api/logs-stream` handler registers its
-listeners as anonymous functions and then tries to remove them by a different
-reference, so nothing is removed and listeners accumulate on every browser
-disconnect. A long-lived server with a dashboard open in several tabs
-accumulates them steadily. Restarting clears it. The fix is in
-`apps/server/src/routes/index.ts`.
 
 ---
 

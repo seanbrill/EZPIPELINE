@@ -47,7 +47,7 @@ EZPIPELINE/
     client/          React + Vite
     server/          Express + better-sqlite3 + Socket.IO
       src/
-        routes/      HTTP handlers (index.ts is ~1,970 lines and holds most of them)
+        routes/      HTTP handlers (index.ts is ~2,750 lines and holds most of them)
         controllers/ EZPipelineController, ConfigController, SystemController, Logger
         services/    Database, Build, Versioning, Permissions, Scheduler,
                      Plugin, Claude, MCP, Agent, Email, Settings, Terminal, Reset
@@ -64,12 +64,10 @@ EZPIPELINE/
   ezpipeline.config.json
 ```
 
-Two files in `apps/server/src` are dead and can be ignored: `index.ts` is
-zero bytes, and `types/yaml/index.ts` declares an `EZPIPELINEYAML` interface
-that the runtime does not use. The interface the runtime actually uses is
-declared inside `controllers/EZPipelineController.ts`. Only
-`KubernetesConfig` is imported out of `types/yaml`. See
-[Pipeline schema](pipeline-schema.md#two-competing-type-definitions).
+The pipeline file's shape (`EZPIPELINEYAML`, `Step`, `KubernetesConfig`) is
+declared in `controllers/EZPipelineController.ts`; which fields are allowed,
+and what loading a file does with it, is `services/pipelineFile.ts`. See
+[Pipeline schema](pipeline-schema.md#where-this-is-defined).
 
 ---
 
@@ -80,54 +78,39 @@ declared inside `controllers/EZPipelineController.ts`. Only
 2.  start_build()                    a build row is created, status "running"
 3.  resolve the pipeline directory   from the target id
 4.  copy resources/ into workspace/  private keys chmod'd to 600
-5.  load the pipeline's .env         merged into the SERVER's process.env
+5.  read the env layers              .env.global, each .env.group, the pipeline's .env
 6.  emit build_start
-7.  for each step:
+7.  for each step (a kubernetes block is the last one):
       resolve cwd
-      build the step environment
+      build the step environment from the layers
       spawn a shell, stream stdout and stderr through the redactor
       emit progress
-8.  archive the workspace as versions/<version>.zip
-9.  prune versions past 10 files or 1 GB
-10. if the YAML has a kubernetes block, kubectl apply
-11. emit build_complete
+8.  record what the run was made of  commits, and the images it pushed
+9.  emit build_complete
 ```
 
-Step 5 is worth knowing about. The pipeline's `.env` is loaded by assigning
-each key onto the **server process's own** `process.env`, not onto a
-per-build environment object. Values therefore persist after the build and are
-visible to the next pipeline that runs. That is a bug in
-`EZPipelineController.run()`, reported but not fixed here.
+The env layers are read into a per-run object and given to each step. They are
+never written into the server's own `process.env`, so a variable reaches only
+the pipeline it belongs to.
 
 ### Where a step runs
 
 `cwd` defaults to the pipeline's `workspace/` directory. A relative `cwd` is
-joined onto it. The literal value `root` resolves to `PROJECT_ROOT`, which is
-**`apps/server`**, not the repository root. If you have a step doing
-`cwd: root` expecting to land in the checkout, it is landing in the server
-app directory instead.
+joined onto it. The literal value `root` is the server's own folder, which
+differs in every install; the editor warns about it.
 
 ### Approval steps
 
-A step with `type: approval` pauses the loop and emits `build_paused`. The
-build sits with status `paused` until `POST /api/builds/:id/approve`. That
-endpoint has no permission check, so anyone who can log in can release
-anyone's gate.
+A step with `type: approval` pauses the loop and emits `build_paused`, which
+is on the SSE stream. The build sits with status `paused` until
+`POST /api/builds/:id/approve`, which needs `run` permission on the pipeline
+and works once: a second approve answers 409.
 
-`build_paused` is emitted internally but never forwarded onto the SSE stream,
-so a UI listening only to SSE cannot tell a paused build from a slow one.
+### Rollback
 
-### Versioning and rollback
-
-- **Archive**: on success the workspace is zipped to
-  `data/pipelines/<...>/versions/<version>.zip`, excluding `node_modules` and
-  `.git`. If a `Dockerfile` is present an image is built and tagged instead.
-- **Prune**: oldest first, past 10 versions or 1 GB total.
-- **Rollback**: unzip the artifact into `versions/rollback_workspace`, write a
-  `.rollback.yaml`, then run that. "Smart rollback" reads the original YAML
-  and drops steps that look like build steps (name or command containing
-  `build`, `compile`, `test`, `npm run build`, `docker build`) on the grounds
-  that you are restoring an artifact, not making a new one.
+A run records the container images it pushed. Rolling back to a run starts a
+new run of the pipeline with `EZP_ROLLBACK=1` and `EZP_IMAGE_TAG` set to that
+run's tag, so the deploy steps deploy it instead of building.
 
 ---
 
@@ -138,7 +121,7 @@ version of this page said otherwise and every one was wrong, so it is worth
 being blunt.
 
 ```
-GET /api/logs-stream?token=<jwt>     text/event-stream
+GET /api/logs-stream?ticket=<one-time ticket>     text/event-stream
 ```
 
 `EZPipelineController` is a Node `EventEmitter`. The SSE handler subscribes to
@@ -156,11 +139,8 @@ terminal and the assistant need to send keystrokes back, which SSE cannot do.
 The cost is that a reverse proxy has to be configured for both, and that
 buffering proxies will silently break the SSE stream.
 
-There is one leak here worth knowing about: the SSE handler adds its
-listeners as anonymous arrow functions, then on disconnect calls
-`controller.off("build_start", sendEvent)` with a different function
-reference. The removal does nothing, so listeners accumulate on every
-disconnect. Reported, not fixed.
+On disconnect the SSE handler removes each listener it added, by the same
+function reference, so a closed tab leaves nothing behind.
 
 ---
 
@@ -177,10 +157,7 @@ The server port is passed to the client at build time through
 and everything is same-origin.
 
 The client build writes **straight into `apps/server/public`**
-(`build.outDir` in the Vite config). There is no copy step. Documentation
-that tells you to `cp -r apps/client/dist/* apps/server/public/` is describing
-an arrangement that no longer exists; `apps/client/dist/` is a stale
-leftover.
+(`build.outDir` in the Vite config). There is no copy step.
 
 ---
 
@@ -188,12 +165,10 @@ leftover.
 
 SQLite through `better-sqlite3`, single file, synchronous API.
 
-**The file is `apps/server/data/app.db`.** `Database.ts` hardcodes
-`path.resolve(__dirname, "../../data/app.db")`. It does **not** use the
-`DB_PATH` export from `config/index.ts`, and there is no `DATABASE_PATH`
-environment variable. Changing `paths.data` in `ezpipeline.config.json` moves
-pipelines and logs but leaves the database where it is. See
-[Configuration](configuration.md#the-data-path-does-not-move-the-database).
+The file is `app.db` in the data folder: `paths.data` in
+`ezpipeline.config.json`, or `EZP_DATA_DIR` when that is set
+(`DB_PATH` in `config/index.ts`). Moving the data folder moves the database
+with the pipelines. See [Configuration](configuration.md#paths).
 
 ### Tables
 
@@ -254,8 +229,10 @@ Adding one means editing `server.ts`. See
 ## Authentication and authorization
 
 Login checks bcrypt, then issues an HS256 JWT with a 24 hour expiry, signed
-with `JWT_SECRET` or a hardcoded fallback if that is unset. The client keeps
-it in `localStorage`. On every protected request the middleware verifies the
+with `JWT_SECRET`, without which the server does not start outside
+development. Failed attempts are limited per account and per address. The
+client keeps the token in `localStorage`, and signs out when the server
+answers 401. On every protected request the middleware verifies the
 token **and re-reads the user row**, so deleting a user invalidates their
 outstanding tokens immediately.
 
@@ -266,20 +243,22 @@ development-only affordance: it disables authentication for everyone.
 Authorization is the seven-flag model in
 [Permissions](permissions.md). Admins bypass every check.
 
-**Coverage is uneven.** Of the routes registered on the main router, roughly a
-third have no authorization beyond "is logged in". The complete list is in the
-[API reference](api-reference.md), marked in place. The ones that matter most:
-build artifact download, rollback, agent token creation, and reading any
-user's permission set.
+Each route checks the permission its action needs: `view` to read a
+pipeline, its builds and their logs; `run` to run, abort, approve, roll back
+or schedule; `editYaml` and `editEnv` to change its files. The
+[API reference](api-reference.md) lists the requirement beside each route.
 
 ---
 
 ## Log redaction
 
-`Logger` holds a `Redactor` that every value from a pipeline `.env` is
-registered into, provided it is three characters or longer. Any log line
-containing one of those strings has it replaced with `[REDACTED]` before it is
-written or streamed.
+`Logger` holds a `Redactor`. At the start of each run, values from the env
+files whose variable names look secret (`SECRET`, `PASSWORD`, `TOKEN`, `_KEY`
+and similar), or that are marked `# @secret`, and are 8 characters or longer,
+are registered with it. Any log line containing one has it replaced with
+`[REDACTED]` before it is written or streamed. Names, not every value: hiding
+every value turned a branch called `develop` into `[REDACTED]` wherever the
+word appeared.
 
 This is a substring match over a set, not a parser. It catches a secret pasted
 into an error message, which is the common case. It will not catch a secret
@@ -292,8 +271,8 @@ a safety net, not a guarantee.
 
 **Development.** `npm run start` kills whatever is on the two configured
 ports, then runs the server under `tsx watch` and the client under Vite
-through `concurrently`. Ports come from `ezpipeline.config.json`. Note the
-shipped config sets the client to **5000**, not Vite's 5173.
+through `concurrently`. Ports come from `ezpipeline.config.json`: 5001 for
+the server and 5173 for the client.
 
 **Production.** `npm run build` compiles the client into
 `apps/server/public` and the server into `apps/server/compile`, then bundles

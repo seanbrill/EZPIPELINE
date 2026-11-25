@@ -3,6 +3,7 @@ import cors from "cors";
 import path from "path";
 import router from "./routes/index.js";
 import Logger from "./controllers/Logger.js";
+import { AuditService } from "./services/AuditService.js";
 
 const app = express();
 
@@ -18,6 +19,10 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Every write to the API leaves an audit event (services/AuditService.ts).
+// Mounted before every /api router, including agent, ai and terminal.
+app.use("/api", AuditService.getInstance().middleware());
 
 // Static file serving is handled in server.ts
 

@@ -38,44 +38,25 @@ credential minted at `POST /api/agent-tokens`, meant for scripts rather than
 people. A user JWT will not open them and an agent token will not open
 anything else. See [Agent API](#agent-api).
 
-### Error shapes are not uniform
+### Errors
 
-Three different shapes come out of this server, and a client has to handle
-all three.
+Every error is JSON with a non-2xx status.
 
 | Situation | Status | Body |
 |---|---|---|
-| A handler rejected the request | 4xx / 5xx | `{"error":"Human sentence"}` |
-| No token, bad token, or user deleted | 401 / 403 | `text/plain`: `Unauthorized` / `Forbidden` |
-| Unknown path under `/api` | 200 | the SPA's `index.html` |
+| No token | 401 | `{"error":"not_signed_in","message":"Sign in first."}` |
+| Expired or bad token, or the account was deleted | 401 | `{"error":"session_expired","message":"..."}` |
+| Signed in, but not allowed | 403 | `{"error":"...","message":"..."}` or `{"error":"Sentence"}` |
+| Unknown path under `/api` | 404 | `{"error":"not_found","message":"There is no GET /api/nope."}` |
+| A handler rejected the request | 4xx / 5xx | see below |
 
-The second and third are worth dwelling on.
+Newer routes answer `{"error":"snake_case_code","message":"A sentence."}`:
+branch on `error`, show `message`. Older routes put the sentence in `error`
+and send no `message`. A client that shows `message` when there is one and
+`error` otherwise reads both, which is what the app does.
 
-**401 and 403 from the auth middleware are plain text, not JSON.** They come
-from `res.sendStatus()` in `apps/server/src/middleware/auth.ts`, which sends
-the status text as the body. Parsing them as JSON throws.
-
-**A mistyped API path returns HTML with status 200.** The SPA catch-all in
-`server.ts` serves `index.html` for any GET it does not recognise, and only
-returns `{"error":"Not Found"}` when the request's `Accept` header excludes
-HTML. A browser `fetch()` sending `Accept: */*` gets a 200 and a page of
-HTML. Verified:
-
-```
-$ curl -s -o /dev/null -w "%{http_code} %{content_type}\n" localhost:5001/api/nope
-200 text/html; charset=utf-8
-
-$ curl -s -o /dev/null -w "%{http_code} %{content_type}\n" \
-    -H "Accept: application/json" localhost:5001/api/nope
-404 application/json; charset=utf-8
-```
-
-If you are writing a client, send `Accept: application/json`. Otherwise a typo
-in a URL looks like a successful request.
-
-None of the 165 JSON error bodies carry a machine-readable code; they are
-prose only. To branch on a specific failure you are matching on English. See
-[the conventions note in Development](development.md#error-shapes).
+A 401 always means "sign in again". The app signs out and shows the sign-in
+page when it gets one.
 
 ---
 
@@ -124,9 +105,15 @@ That last token is scoped `setup-email` and the middleware rejects it on every
 path except `/auth/setup/...`. It is a one-hour token whose only purpose is
 letting someone attach an email address so they can then receive codes.
 
-Tokens are HS256, expire in 24 hours, and there is no refresh. The signing
-secret is `JWT_SECRET`, which **falls back to the literal string
-`ezpipeline-secret-key` when unset**. See
+Ten wrong passwords for one account, or thirty from one address, within 15
+minutes, and sign-in answers `429 too_many_attempts` with a `Retry-After`
+header until the oldest of them is 15 minutes old. A right password clears the
+account's count. An unknown username takes as long to refuse as a wrong
+password.
+
+Tokens are HS256 and last 24 hours, or 30 days with `"remember": true`. There
+is no refresh. The signing secret is `JWT_SECRET`; outside development the
+server will not start without one of at least 32 characters. See
 [Configuration](configuration.md#jwt_secret).
 
 ---
@@ -135,27 +122,27 @@ secret is `JWT_SECRET`, which **falls back to the literal string
 
 | Method | Path | Who can call it |
 |---|---|---|
-| GET | `/api/users` | **any logged-in user** |
+| GET | `/api/users` | any logged-in user; the full list for admins and user managers |
 | GET | `/api/users/me` | self |
 | POST | `/api/users` | admin or `can_manage_users` |
 | PATCH | `/api/users/:id` | admin, or self for own fields |
 | DELETE | `/api/users/:id` | admin, not self, not the primary admin |
 
-`GET /api/users` has no role check. Verified: a non-admin token returns the
-full list with every username and email address.
+`GET /api/users` gives an admin or user manager everyone's account:
 
 ```json
-{"users":[{"id":1,"username":"Admin","email":"...","created_at":"2026-01-12 20:17:48",
- "isAdmin":true,"canManageUsers":false}]}
+{"users":[{"id":1,"username":"admin","email":"...","displayName":"Admin",
+ "createdAt":"2026-01-12 20:17:48","isAdmin":true,"isPrimaryAdmin":true,
+ "canManageUsers":false,"mfaEnabled":false,"lastSignIn":"2026-11-16 09:12:03"}]}
 ```
 
-Note what is **not** there: no `display_name`. The column exists but this
-route does not select it.
+Anyone else gets `id`, `username` and `displayName` only, which is what a
+picker needs; no email addresses.
 
-`POST /api/users` accepts only `{username, password, isAdmin}`. If you send
-`displayName` or `canManageUsers` they are silently dropped, because the
-INSERT lists three columns. It responds `{"message":"User created"}` with no
-id, so you cannot learn the new user's id from the response. List users again.
+`POST /api/users` takes `username` (2 to 40 letters, digits, dots, dashes or
+underscores), `password` (12 characters or more), and optionally `email`,
+`displayName`, and `isAdmin` and `canManageUsers` (both only from an admin).
+It answers `{"message":"User created","id":7}`.
 
 `GET /api/check-auth` returns the decoded JWT merged with the database row, so
 the `user` object carries both shapes at once plus the JWT's own timestamps:
@@ -175,11 +162,8 @@ stable contract.
 
 | Method | Path | Who can call it |
 |---|---|---|
-| GET | `/api/users/:id/permissions` | **any logged-in user, for any user** |
+| GET | `/api/users/:id/permissions` | self, admins and user managers |
 | POST | `/api/users/:id/permissions` | admin, and not against the primary admin |
-
-There is no read-side authorization here. Verified: a non-admin can read the
-permission set of any account, including admins.
 
 The write is a **full replacement**, not a grant. The handler deletes every
 row for that user and re-inserts what you send, so to revoke one pipeline you
@@ -212,13 +196,14 @@ See [Permissions](permissions.md) for what each flag actually gates.
 | GET | `/api/builds` | Currently tracked builds, filtered |
 | GET | `/api/builds/history` | Returns `{"history": [...]}` |
 | GET | `/api/history/:pipeline` | Returns `{"builds": [...]}`, `all` for everything |
-| DELETE | `/api/history/:pipeline` | |
-| GET | `/api/builds/:id/logs` | No permission check |
-| DELETE | `/api/builds/:id` | |
-| POST | `/api/abort` | Body `{"id"}` |
-| POST | `/api/builds/:id/abort` | No permission check |
-| POST | `/api/builds/:id/approve` | Releases an `approval` step, no permission check |
-| DELETE | `/api/clear-builds` | Empty 200 body, no permission check |
+| DELETE | `/api/history/:pipeline` | Needs write access to the pipeline |
+| GET | `/api/builds/:id/logs` | Needs `view` on the build's pipeline |
+| DELETE | `/api/builds/:id` | Admins only |
+| POST | `/api/builds/:id/abort` | Needs `run` on the build's pipeline |
+| POST | `/api/builds/:id/approve` | Releases an `approval` step. Needs `run`, and works once |
+| POST | `/api/builds/:id/rollback` | Starts a new run deploying that run's images. Needs `run` |
+| DELETE | `/api/clear-builds` | Admins only. Empty 200 body |
+| POST | `/api/logs-stream/ticket` | A one-time ticket for the stream |
 | GET | `/api/logs-stream` | SSE, see below |
 
 The two history routes disagree on their envelope key. `/api/builds/history`
@@ -236,63 +221,41 @@ gives you `{"history": [...]}` and `/api/history/:pipeline` gives you
 
 Returns pipelines the caller can view, each with a computed `permissions`
 object. For a non-admin without `editYaml`, the handler strips `steps`,
-`env`, `kubernetes` and `filePath` from the object before sending it, so the
-shell commands never reach a browser that is not allowed to edit them. This
-one does work as advertised: it is the sanitisation
-[Permissions](permissions.md) describes.
+`kubernetes` and `filePath` from the object before sending it, so the shell
+commands never reach a browser that is not allowed to edit them. This is the
+sanitisation [Permissions](permissions.md) describes.
 
 ### POST /api/run-pipeline
 
 Permitted if the caller has either legacy write access or the `run` flag.
 Responds immediately with `{"message", "buildId"}`; the build itself runs
-detached.
+detached, once.
 
-**This handler starts the pipeline twice.** It calls
-`EZPipelineController.instance.run(...)` directly and then schedules the same
-call again inside `setImmediate`. That is a bug in
-`apps/server/src/routes/index.ts`, not a feature, and it is not fixed here
-because this page's author does not own `apps/`. Expect duplicated step
-output until it is.
-
-`requireConfirmation` in a pipeline's YAML is honoured by the **browser
-only**. This endpoint does not check it, so anything calling the API directly
-bypasses the confirmation entirely.
+A pipeline with `requireConfirmation: true` is refused with
+`409 {"error":"confirmation_required"}` unless the body carries
+`"confirmed": true`. The app sends it after the person confirms; a script
+calling the API has to send it on purpose. The two rollback routes follow the
+same rule.
 
 ---
 
 ## Versions and rollback
 
-| Method | Path |
-|---|---|
-| GET | `/api/pipelines/:targetName/versions` |
-| GET | `/api/pipelines/:targetName/versions/:filename/download` |
-| DELETE | `/api/pipelines/:targetName/versions/:filename` |
-| GET | `/api/pipelines/:targetName/rollback-plan` |
-| POST | `/api/pipelines/:targetName/rollback` |
+| Method | Path | Requires |
+|---|---|---|
+| GET | `/api/pipelines/:targetName/versions` | `view` |
+| GET | `/api/pipelines/:targetName/versions/:filename/download` | `view` |
+| DELETE | `/api/pipelines/:targetName/versions/:filename` | `editYaml` |
+| GET | `/api/pipelines/:targetName/rollback-plan` | `view` |
+| POST | `/api/pipelines/:targetName/rollback` | `run` |
 
-**None of these five check permissions.** They require a valid JWT and nothing
-else. Any logged-in user can list, download and delete the build artifacts of
-any pipeline, and can trigger a rollback, which executes the pipeline.
+Each permission is on the pipeline named in the path. A user whose grants are
+on other pipelines gets 403.
 
-Verified against a running server with a non-admin token whose only grant was
-on an unrelated pipeline:
-
-```
-$ curl -H "Authorization: Bearer $NONADMIN" \
-    .../api/pipelines/8f7c3a2b-.../versions
-200 {"versions":[{"name":"1.0.0.zip","size":210738390,...}]}
-
-$ curl -r 0-64 -H "Authorization: Bearer $NONADMIN" \
-    .../api/pipelines/8f7c3a2b-.../versions/1.0.0.zip/download
-status=206 type=application/zip
-```
-
-The `viewResources` permission exists and is checked elsewhere. It is simply
-not consulted here. Until that is fixed, treat "can log in" as "can read every
-build artifact on the box".
-
-`POST .../rollback` takes `{"version", "smartRollbackYaml"?}`. A trailing
-`.zip` on the version is stripped for you.
+`POST .../rollback` takes `{"version", "smartRollbackYaml"?, "confirmed"?}`.
+A trailing `.zip` on the version is stripped for you. Prefer
+`POST /api/builds/:id/rollback`, which redeploys the images a run recorded
+rather than unpacking an archive.
 
 ---
 
@@ -303,18 +266,21 @@ build artifact on the box".
 | GET | `/api/config/files` | The file tree |
 | POST | `/api/config/content` | Read a file. Body `{type, path, keysOnly?}` |
 | POST | `/api/config/save` | Write a file, taking a backup first |
-| POST | `/api/config/upload` | multipart, no permission check |
+| POST | `/api/config/upload` | multipart. Needs `editYaml` on the folder it writes to |
 | POST | `/api/config/create-pipeline` | |
 | POST | `/api/config/copy-pipeline` | |
 | POST | `/api/config/create-folder` | |
 | POST | `/api/config/delete-folder` | |
 | POST | `/api/config/rename-folder` | |
 | POST | `/api/config/move` | |
-| GET | `/api/config/resources` | No permission check |
-| DELETE | `/api/config/resources` | No permission check |
-| GET | `/api/config/global-resources` | No permission check |
-| POST | `/api/config/global-resources/upload` | No permission check |
-| DELETE | `/api/config/global-resources/:name` | |
+| GET | `/api/config/resources` | `view` on the folder; env files admins only |
+| DELETE | `/api/config/resources` | `editYaml` on the folder; env files admins only |
+| GET | `/api/config/global-resources` | Admins only |
+| POST | `/api/config/global-resources/upload` | Admins only |
+| DELETE | `/api/config/global-resources/:name` | Admins only |
+
+A global resource is copied into every pipeline's workspace, which is why all
+three of its routes are for admins.
 
 `POST /api/config/content` is the interesting one. `type` is `yaml` or `env`,
 `path` is relative to the pipelines directory, and the permission required
@@ -351,9 +317,9 @@ target `global-env`.
 The split is deliberate: seeing that `DEPLOY_KEY` exists is a lesser privilege
 than seeing what it is set to.
 
-Both GETs return `[]` when the global env file does not exist, which is
-indistinguishable from a file that exists and is empty. See
-[the empty-array note in Development](development.md#never-return-an-empty-array-to-signal-failure).
+`/keys` answers `{"keys": [...]}` and `/keys-with-values` answers
+`{"variables": [...]}`. Before the first variable is set there is no file,
+and both lists are empty. A file that cannot be read is a 500.
 
 ---
 
@@ -361,26 +327,15 @@ indistinguishable from a file that exists and is empty. See
 
 | Method | Path | Who can call it |
 |---|---|---|
-| GET | `/api/schedules` | any logged-in user |
-| GET | `/api/schedules/:target` | any logged-in user |
-| POST | `/api/schedules` | admin |
-| DELETE | `/api/schedules/:id` | **any logged-in user** |
-| PATCH | `/api/schedules/:id/toggle` | **any logged-in user** |
+| GET | `/api/schedules` | anyone; lists the schedules of pipelines they can view |
+| GET | `/api/schedules/:pipeline` | `view` on the pipeline |
+| POST | `/api/schedules` | `run` on the pipeline |
+| DELETE | `/api/schedules/:id` | `run` on the schedule's pipeline |
+| PATCH | `/api/schedules/:id/toggle` | `run` on the schedule's pipeline |
 
-Delete and toggle look guarded if you search the file, because there is an
-admin check on both further down. It never runs. Each path is registered
-twice, and Express uses the first handler that matched:
-
-| Path | First registration | Second |
-|---|---|---|
-| `DELETE /schedules/:id` | line 175, no check, **this one runs** | line 1501, admin-only, dead |
-| `PATCH /schedules/:id/toggle` | line 185, no check, **this one runs** | line 1555, admin-only, dead |
-
-Reported, not fixed, for the same reason as above.
-
-A database failure while listing schedules is swallowed inside
-`SchedulerService` and surfaces as `200 {"schedules": []}`, so "the database is
-broken" and "you have no schedules" look identical from outside.
+Scheduling a pipeline is running it later, so it takes the same permission as
+running it now. An unknown schedule id is a 404. If the database cannot be read, the
+answer is a 500, never an empty list.
 
 ---
 
@@ -494,16 +449,13 @@ permission.
 The write rejects an empty `content` as a missing field, so you cannot blank a
 file through this route.
 
-Tokens are managed through the JWT-authenticated routes:
+Tokens are managed through the JWT-authenticated routes, by admins only:
 
 | Method | Path | Who |
 |---|---|---|
-| GET | `/api/agent-tokens` | **any logged-in user** |
-| POST | `/api/agent-tokens` | **any logged-in user** |
-| DELETE | `/api/agent-tokens/:id` | **any logged-in user** |
-
-No admin check on any of the three. Any account that can log in can mint an
-agent token.
+| GET | `/api/agent-tokens` | admin |
+| POST | `/api/agent-tokens` | admin |
+| DELETE | `/api/agent-tokens/:id` | admin |
 
 ---
 
@@ -515,12 +467,15 @@ spelled out.
 ### Build progress: Server-Sent Events
 
 ```
-GET /api/logs-stream?token=<jwt>
+POST /api/logs-stream/ticket          -> {"ticket":"...","expiresIn":30}
+GET  /api/logs-stream?ticket=<ticket>    text/event-stream
 ```
 
-The token goes in the query string because `EventSource` cannot set headers.
-A small shim at the top of the handler copies it into an `Authorization`
-header before the normal middleware runs.
+`EventSource` cannot set headers, so the browser first trades its session for
+a ticket that works once and expires in seconds, and puts that in the URL.
+The session token itself is never put in a URL, where proxies and browser
+history would keep it. Anything that can set a header (curl, a script) can
+send `Authorization: Bearer <token>` to `/api/logs-stream` instead.
 
 Each message is `data: {"type": "<event>", "data": <build>}`, plus an initial
 `{"type":"connected"}`. The event names use **underscores**:
@@ -576,8 +531,12 @@ and `write` to `canEditYaml`.
 
 ## Rate limiting and versioning
 
-Neither exists. There is no rate limit on `/api/login` or anywhere else, and
-the API carries no version prefix.
+`POST /api/login` is rate limited: after 10 failed attempts on one account, or
+30 from one address, within 15 minutes, it answers
+`429 {"error":"too_many_attempts"}` with a `Retry-After` header in seconds. A
+successful login clears the count for that account. Nothing else is limited.
+
+The API carries no version prefix.
 
 ---
 

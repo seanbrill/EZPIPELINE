@@ -1,3 +1,5 @@
+import jwt from "jsonwebtoken";
+import { JWT_SECRET } from "./config/secret.js";
 import app from "./app.js";
 import agentRoutes from "./routes/agent.js";
 import aiRoutes from "./routes/ai.js";
@@ -29,6 +31,10 @@ import { migrateBuildTriggeredBy } from "./migrations/009_build_triggered_by.js"
 import { migrateBuildProvenance } from "./migrations/010_build_provenance.js";
 import { migrateGitCredentials } from "./migrations/011_git_credentials.js";
 import { migrateGitCredentialReads } from "./migrations/012_git_credential_reads.js";
+import { migrateV2Groundwork } from "./migrations/013_v2_groundwork.js";
+import { migrateSubsteps } from "./migrations/014_substeps.js";
+import { migrateApiTokens } from "./migrations/015_api_tokens.js";
+import { migrateLogLevel } from "./migrations/016_log_level.js";
 import { SchedulerService } from "./services/SchedulerService.js";
 import { BuildService } from "./services/BuildService.js";
 import { GitWatchService } from "./services/GitWatchService.js";
@@ -90,6 +96,10 @@ try {
     migrateBuildProvenance();
     migrateGitCredentials();
     migrateGitCredentialReads();
+    migrateV2Groundwork();
+    migrateSubsteps();
+    migrateApiTokens();
+    migrateLogLevel();
 } catch (e) {
     Logger.getInstance().warn(`Build triggered_by migration skipped or already applied: ${e}`);
 }
@@ -124,12 +134,18 @@ app.use("/api/agent", agentRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/terminal", terminalRoutes);
 
+// An /api path that matched nothing, by any method, is a mistake in the
+// caller: say so in JSON. Without this a GET got index.html with a 200 and a
+// POST got Express's HTML error page.
+app.use("/api", (req: Request, res: Response) => {
+    res.status(404).json({ error: 'not_found', message: `There is no ${req.method} ${req.baseUrl}${req.path === '/' ? '' : req.path}.` });
+});
+
 // Serve static client files (Architecture Overhaul)
 app.use(express.static(PUBLIC_DIR));
 
 // Catch-all route for SPA client routing
 app.get(/(.*)/, (req: Request, res: Response, next: NextFunction) => {
-    // Determine if request expects JSON (API call that missed routes)
     if (req.accepts('json') && !req.accepts('html')) {
         res.status(404).json({ error: 'Not Found' });
         return;
@@ -150,6 +166,20 @@ const activeSockets = new Map();
 app.set("io", io);
 app.set("sockets", activeSockets);
 
+// A socket is someone signed in: the assistant and the terminal stream to it,
+// and they check it is the same person who asked.
+io.use((socket, next) => {
+    const token = typeof socket.handshake.auth?.token === "string" ? socket.handshake.auth.token : "";
+    try {
+        const d = jwt.verify(token, JWT_SECRET) as { id?: number; scope?: string };
+        if (d.scope || typeof d.id !== "number") throw new Error("not a session");
+        socket.data.userId = d.id;
+        next();
+    } catch {
+        next(new Error("Sign in first."));
+    }
+});
+
 io.on("connection", (socket) => {
     Logger.getInstance().info(`Socket connected: ${socket.id}`);
     activeSockets.set(socket.id, socket);
@@ -160,7 +190,9 @@ io.on("connection", (socket) => {
     });
 });
 
-server.listen(PORT, () => {
-    Logger.getInstance().info(`Server running at http://localhost:${PORT}`);
+// EZP_HOST: the desktop app binds 127.0.0.1, so only this computer can reach it.
+const HOST = process.env.EZP_HOST || undefined;
+server.listen(Number(PORT), HOST as string, () => {
+    Logger.getInstance().info(`Server running at http://${HOST ?? "localhost"}:${PORT}`);
     Logger.getInstance().info(`Serving client from: ${PUBLIC_DIR}`);
 });

@@ -1,0 +1,25 @@
+{
+  "name": "ezpipeline-site",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ezpipeline: the public site (landing, downloads, docs). A static export served by FileFreak Sites.",
+  "scripts": {
+    "dev": "next dev -p 5195",
+    "releases": "node --env-file-if-exists=../../.env scripts/fetch-releases.mjs",
+    "build": "npm run releases && next build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@filefreak.io/sdk": "0.10.1",
+    "marked": "18.1.3",
+    "next": "15.5.28",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.4",
+    "@types/react": "19.0.2",
+    "typescript": "5.9.3"
+  }
+}

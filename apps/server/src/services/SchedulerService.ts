@@ -111,7 +111,9 @@ export class SchedulerService {
             // re-enters run() mid-build and must keep the definition it began
             // with.
             controller.refreshTargets();
-            controller.run(schedule.pipeline_target);
+            // The run's own log says why it failed; this is for the server's log, and so the promise is never left unhandled.
+            controller.run(schedule.pipeline_target, undefined, { triggeredBy: 'schedule' }) // so the run says why it started
+                .catch((e) => this.logger.error(`Scheduled run of ${schedule.pipeline_target} failed`, e));
 
             this.logger.info(`Scheduled pipeline ${schedule.pipeline_target} started successfully`);
 
@@ -233,8 +235,10 @@ export class SchedulerService {
             const db = this.db.getDb();
             return db.prepare("SELECT * FROM schedules WHERE pipeline_target = ?").all(pipelineTarget) as Schedule[];
         } catch (e) {
+            // Rethrown: an empty list would read as "no schedules" when the
+            // database is the problem.
             this.logger.error(`Failed to get schedules for pipeline ${pipelineTarget}: ${e}`);
-            return [];
+            throw e;
         }
     }
 
@@ -247,7 +251,7 @@ export class SchedulerService {
             return db.prepare("SELECT * FROM schedules ORDER BY created_at DESC").all() as Schedule[];
         } catch (e) {
             this.logger.error(`Failed to get all schedules: ${e}`);
-            return [];
+            throw e;
         }
     }
 }

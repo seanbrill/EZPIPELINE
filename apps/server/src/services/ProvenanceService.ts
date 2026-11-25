@@ -125,7 +125,7 @@ export class ProvenanceService {
 
         const previous = this.db.getDb().prepare(`
             SELECT commit_sha FROM builds
-             WHERE target = ? AND id != ? AND commit_sha IS NOT NULL
+             WHERE target = ? AND id != ? AND commit_sha IS NOT NULL AND status = 'success'
              ORDER BY started_at DESC LIMIT 1
         `).get(target, buildId) as { commit_sha: string } | undefined;
 
@@ -323,6 +323,9 @@ export class ProvenanceService {
 
     public saveCommits(buildId: string, headSha: string | null, commits: CommitInfo[]): void {
         try {
+            // Found nothing (the workspace has no checkout): keep what the run
+            // was stamped with at start rather than erasing it.
+            if (!headSha && commits.length === 0) return;
             this.db.getDb().prepare(
                 `UPDATE builds SET commit_sha = ?, commits = ? WHERE id = ?`
             ).run(headSha, commits.length ? JSON.stringify(commits) : null, buildId);

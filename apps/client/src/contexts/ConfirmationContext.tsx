@@ -2,11 +2,13 @@ import React, { createContext, useContext, useState, useCallback, useRef } from 
 import ConfirmationModal from '../components/common/ConfirmationModal';
 
 interface ConfirmOptions {
-    title: string;
-    message: string;
+    title: React.ReactNode;
+    message: React.ReactNode;
     confirmText?: string;
     cancelText?: string;
     isDangerous?: boolean;
+    /** Type this (e.g. the pipeline's name) before the button wakes up. */
+    requireText?: string;
 }
 
 interface ConfirmationContextType {
@@ -48,6 +50,7 @@ export const ConfirmationProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 confirmText={options.confirmText}
                 cancelText={options.cancelText}
                 isDangerous={options.isDangerous}
+                requireText={options.requireText}
                 onConfirm={handleConfirm}
                 onCancel={handleCancel}
             />

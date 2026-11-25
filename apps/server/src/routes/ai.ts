@@ -1,26 +1,11 @@
 // The assistant's HTTP surface.
 //
 // Everything the assistant actually does lives in services/AnthropicAssistant.ts.
-// This file exists to turn a POST into a socket stream, and to be honest about
-// the two actions that no longer mean anything.
+// This file exists to turn a POST into a socket stream.
 //
-// THE ACTION NAMES ARE UNCHANGED ON PURPOSE. The client posts install / login /
-// spawn / input / kill and listens for claude-output, claude-error,
-// claude-success, claude-exit and claude-init-complete. Renaming any of that
-// would mean editing apps/client, which this task does not own, so the contract
-// is preserved exactly and the two dead actions answer for themselves rather
-// than pretending to work:
-//
-//   install  There is nothing to install. The engine is a dependency of this
-//            server, not a CLI downloaded into ai_sandbox at runtime.
-//   login    There is no interactive login. The old flow opened an OAuth code
-//            in the browser and stored a token in the sandbox; the API key now
-//            lives in the server environment, where the browser cannot reach
-//            it and no user can be asked to paste it.
-//
-// Both answer with the same sentence a person needs: which variable, which
-// file, and that a restart is required. A bare 400 that the interface cannot
-// explain would be a bug here.
+// Three actions: spawn (start or restart the conversation), input (send a
+// message, streamed back over the socket) and kill (discard it). The event
+// names keep their claude-* prefix, which the client listens for.
 //
 // OUTPUT IS SENT TO ONE SOCKET, NEVER BROADCAST. The previous version fell back
 // to io.emit() whenever it could not find the requesting socket, which sends
@@ -75,18 +60,17 @@ function resolveSocket(req: Request, res: Response): Socket | null {
         });
         return null;
     }
+    // Someone else's socket id would stream this answer into their browser.
+    if (socket.data?.userId !== (req as any).user?.id) {
+        res.status(403).json({ error: "socket_not_yours", message: "That websocket belongs to another session. Reload the page and try again." });
+        return null;
+    }
     return socket;
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
 
-/**
- * `installed` and `loggedIn` are kept because the current client switches on
- * them, and they are now a slightly awkward fit: nothing is installed at
- * runtime any more, and nobody logs in. `configured`, `engine`, `model` and
- * `message` are the fields that say what is actually true, and the client
- * change that uses them is in the handover notes.
- */
+/** { engine, configured, model, message }: the assistant answers when the server has a key. */
 /**
  * The `useClaude` permission, actually enforced.
  *
@@ -96,12 +80,10 @@ function resolveSocket(req: Request, res: Response): Socket | null {
  * reads and rewrites pipeline YAML. A permission that nothing checks is worse
  * than an absent one, because the screen says the restriction is in force.
  *
- * The check is "useClaude on any target", not on one named pipeline, because
- * this surface is global: the assistant is not opened against a target and its
- * tools take a path. KNOWN LIMITATION, worth closing next: a user granted
- * useClaude on one pipeline can ask the assistant about another, since the
- * tool handlers authorise the path only against the pipelines root. Scoping
- * each tool call to the caller's permitted targets is the real fix.
+ * The check here is "useClaude on any target", because the assistant is not
+ * opened against one pipeline. Each tool call is then checked against the
+ * pipeline it touches (services/AnthropicAssistant.ts, mayOnPipeline), so
+ * useClaude on one pipeline reaches that pipeline only.
  */
 function requireClaudePermission(req: AuthRequest, res: Response): boolean {
     const permissions = PermissionsService.getInstance();
@@ -144,7 +126,7 @@ router.post("/action", authenticateToken, async (req, res) => {
     if (typeof action !== "string" || !action) {
         res.status(400).json({
             error: "action_required",
-            message: "Say which action to run: spawn, input, kill, install or login.",
+            message: "Say which action to run: spawn, input or kill.",
         });
         return;
     }
@@ -156,7 +138,7 @@ router.post("/action", authenticateToken, async (req, res) => {
                 // process, no network call, no greeting round trip.
                 const socket = resolveSocket(req, res);
                 if (!socket) return;
-                assistant.start(socket.id, (event, data) => socket.emit(event, data));
+                assistant.start(socket.id, Number((req as AuthRequest).user!.id), (event, data) => socket.emit(event, data));
                 res.json({ status: "started", configured: assistant.isConfigured() });
                 return;
             }
@@ -190,7 +172,7 @@ router.post("/action", authenticateToken, async (req, res) => {
                 // the browser's fetch times out mid-answer while the stream is
                 // still arriving perfectly well over the socket.
                 void assistant
-                    .send(socket.id, input, (event, data) => socket.emit(event, data))
+                    .send(socket.id, Number((req as AuthRequest).user!.id), input, (event, data) => socket.emit(event, data))
                     .catch((e: any) => {
                         // send() reports its own failures to the client and
                         // resolves. Reaching here means a bug in that reporting,
@@ -211,32 +193,10 @@ router.post("/action", authenticateToken, async (req, res) => {
                 return;
             }
 
-            case "install":
-            case "login": {
-                // Not errors the user caused, so they are explained rather than
-                // rejected silently. See the file header for why both are gone.
-                const socket = resolveSocket(req, res);
-                if (!socket) return;
-
-                if (assistant.isConfigured()) {
-                    const message = "There is nothing to install or log in to any more - the assistant talks to the Anthropic API directly, using the key configured on this server. It is ready to use.";
-                    socket.emit("claude-success", message);
-                    res.json({ status: "ready", message });
-                    return;
-                }
-
-                socket.emit("claude-error", assistant.missingKeyMessage());
-                res.status(503).json({
-                    error: "anthropic_key_missing",
-                    message: assistant.missingKeyMessage(),
-                });
-                return;
-            }
-
             default:
                 res.status(400).json({
                     error: "unknown_action",
-                    message: `"${action}" is not something the assistant can do. Valid actions are spawn, input, kill, install and login.`,
+                    message: `"${action}" is not something the assistant can do. Valid actions are spawn, input and kill.`,
                 });
                 return;
         }
@@ -247,28 +207,6 @@ router.post("/action", authenticateToken, async (req, res) => {
             message: `The assistant could not handle that request: ${e?.message ?? "unknown error"}`,
         });
     }
-});
-
-// ── Setup ───────────────────────────────────────────────────────────────────
-
-/**
- * Kept so that anything still calling it gets a straight answer instead of a
- * 404. It used to npm-install the CLI and kick off an OAuth login. Setup is now
- * one environment variable, which only somebody with shell access to this
- * server can set, so all this can do is report whether that has been done.
- */
-router.post("/setup", authenticateToken, async (_req, res) => {
-    if (assistant.isConfigured()) {
-        res.json({
-            status: "ready",
-            message: "The assistant is configured and ready. There is no setup step any more.",
-        });
-        return;
-    }
-    res.status(503).json({
-        error: "anthropic_key_missing",
-        message: assistant.missingKeyMessage(),
-    });
 });
 
 export default router;

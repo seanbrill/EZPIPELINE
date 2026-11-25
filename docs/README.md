@@ -20,10 +20,9 @@ Every claim here was checked against the code in `apps/` before it was
 written. Where the docs and the code disagreed, the code won and the doc was
 corrected.
 
-That means some pages now say a feature is missing, partial or unenforced
-where they used to say it worked. Those are not regressions in the product.
-They are the docs catching up with it. Each one is called out in place, so
-you can tell "not built" from "built and undocumented".
+Where a check found the code doing something wrong, the code was fixed, and
+the page describes what it does now. A page names what is not built yet as
+not built, rather than describing it as if it were.
 
 If a page describes something you cannot find, treat it as a bug in the page
 and not in your understanding.
@@ -37,7 +36,7 @@ and not in your understanding.
 | Page | What it covers |
 |---|---|
 | [Setup and installation](setup.md) | Prerequisites, install, first admin user, how to tell it worked |
-| [Configuration](configuration.md) | `ezpipeline.config.json`, the environment variables that are actually read, and the ones that do nothing |
+| [Configuration](configuration.md) | `ezpipeline.config.json`, every environment variable the server reads, and the older names it replaced |
 | [Scripts and commands](scripts.md) | Every npm script, what it does, and which ones destroy data without asking |
 
 ### Using it
@@ -57,6 +56,8 @@ and not in your understanding.
 | [Architecture](architecture.md) | The pieces, how a build actually flows, and why progress arrives over SSE and not WebSocket |
 | [API reference](api-reference.md) | Every route the server registers, grouped, with real response shapes |
 | [Development](development.md) | Running it locally, project layout, adding an endpoint, adding a migration |
+| [Self-hosting on AWS](self-hosting.md) | The deploy wizard: what it makes in your account, the pipeline that runs it, and how data moves safely |
+| [Releasing](RELEASING.md) | Publishing the desktop installers to FileFreak and deploying the public site |
 
 ### Operations
 

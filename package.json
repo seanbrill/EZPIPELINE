@@ -1,9 +1,10 @@
 {
   "name": "ezpipeline-monorepo",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/client",
+    "apps/server"
   ],
   "scripts": {
     "reset-password": "node scripts/reset-password.mjs",
@@ -26,6 +27,7 @@
     "docker:sh": "docker compose exec server sh"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "concurrently": "^9.2.1"
   }
 }

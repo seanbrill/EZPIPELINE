@@ -165,45 +165,40 @@ Four sources, and only two of them are configured in the YAML.
 **1. The pipeline's `.env`.** Found by name in the pipeline directory: `.env`,
 or failing that `.env.<pipeline id>`.
 
-> The `env:` field in your YAML has nothing to do with this. Every generated
-> pipeline contains `env: .env` and the runtime never reads it. Renaming your
-> file and updating `env:` will break the pipeline. See
-> [Pipeline schema](pipeline-schema.md#env-does-not-do-what-it-says).
+There is no field in the YAML for it: the file is found by name.
 
-**2. The global environment**, at `apps/server/data/.env.global`, managed
-under Settings and through `/api/global-env`. Loaded once at server start.
+**2. Each group's `.env.group`**, in the group's folder. A pipeline in
+`Notch.fm/Infra` gets `Notch.fm`'s, then `Infra`'s.
 
-**3. Step-level `env`**, a map on the individual step.
+**3. The instance-wide environment**, `.env.global` in the data folder,
+managed under Settings.
 
-**4. Injected by EZPIPELINE**: `WORKSPACE`, `RESOURCES`, `ENV_FILE`,
+**4. Step-level `env`**, a map on the individual step.
+
+**5. Injected by EZPIPELINE**: `WORKSPACE`, `RESOURCES`, `ENV_FILE`,
 `PIPELINE_ID`, `PIPELINE_NAME`, `TARGET_NAME`, `BUILD_ID`, plus headless flags
 like `CI=true` and `GIT_TERMINAL_PROMPT=0`.
 
-### Precedence, and the part that surprises people
+### Precedence
 
 Later wins:
 
-1. server process environment (which by now includes the pipeline `.env`)
-2. `PATH`, with plugin binaries prepended
-3. `WORKSPACE`, `RESOURCES`, `ENV_FILE`
-4. **the step's own `env`**
-5. **the injected identifiers and headless flags**
+1. the server's own environment, with plugin binaries first on `PATH`
+2. `.env.global`
+3. each `.env.group`, outermost first
+4. the pipeline's `.env`
+5. `WORKSPACE`, `RESOURCES`, `ENV_FILE`
+6. **the step's own `env`**
+7. **the injected identifiers and headless flags**
 
-Group five is applied *after* your step's `env`, so you cannot override
+The last group is applied *after* your step's `env`, so you cannot override
 `CI`, `TERM`, `BUILD_ID` or the git prompt suppressors from a step. The
 headless flags are there deliberately: a command that stops to ask for a
 password would otherwise hang the build indefinitely, since nothing is
 attached to its stdin.
 
-### One thing to be aware of
-
-Loading a pipeline's `.env` assigns each key onto the **server's own**
-`process.env`. The values therefore outlive the build and are visible to the
-next pipeline that runs. If two pipelines both define `DEPLOY_KEY`, whichever
-ran last wins until the server restarts. This is a bug in
-`EZPipelineController.run()`, reported but not fixed by this documentation
-pass. Until it is fixed, do not rely on a variable being absent just because
-this pipeline does not define it.
+The layers are put together for each run and never written into the server's
+own environment, so a variable reaches only the pipelines it belongs to.
 
 ### Interpolation
 
@@ -233,60 +228,43 @@ During the copy, any file ending `.pem` or `.key`, or named `id_rsa`, is
 chmod'd to `600`. Without that, `ssh` refuses the key with a permissions
 warning that reads like a network failure.
 
-Resource files are gated by the `viewResources` permission when read through
-`/api/config/content`. They are **not** gated in the artifact download route,
-so anything a build zips up is readable by any logged-in user. See
-[Permissions](permissions.md#where-nothing-is-checked).
+Resource files are gated by the `viewResources` permission when read, and a
+pipeline's downloads by `view` on that pipeline.
 
 ---
 
-## Versions and rollback
+## What a run records, and rolling back
 
-On success the workspace is archived to `versions/<version>.zip`, excluding
-`node_modules` and `.git`. If the workspace contains a `Dockerfile`, an image
-is built and tagged instead of a zip being made.
+When a run ends, EZPIPELINE records what it was made of and what it produced:
+the commits since the last run, and the container images it pushed (from the
+log, or from an `::ezp` marker). Nothing is copied: the registry already has
+the images.
 
-Old versions are pruned oldest-first once there are more than 10, or once the
-directory exceeds 1 GB.
-
-Rolling back unzips a chosen artifact into a clean `rollback_workspace` and
-runs the pipeline against it. **Smart rollback** first rewrites the YAML to
-drop steps that look like build steps, matching on the name or command
-containing `build`, `compile`, `test`, `npm run build` or `docker build`. The
-reasoning is that you already have the artifact and only want the deploy half.
-The matching is textual, so a step called "Test connectivity" will be skipped
-too. Check the plan at `GET /api/pipelines/:target/rollback-plan` before
-committing to it.
+To roll back, open a successful run and choose **Roll back**. A new run of the
+same pipeline starts with `EZP_ROLLBACK=1`, `EZP_IMAGE_TAG` (the tag that run
+pushed) and `EZP_IMAGE_REFS`, so the pipeline's deploy steps can deploy that
+tag instead of building a new one. Only a run that pushed an image with a
+fixed tag can be rolled back to; a `latest` tag has moved since.
 
 ---
 
 ## Kubernetes
 
-Add a `kubernetes` block and it runs after the last step. The presence of the
-block is the trigger; **there is no `enabled` flag**.
+Add a `kubernetes` block and it becomes the last step, "Deploy to
+Kubernetes", with its output in the run's log. If `kubectl` fails, the run
+fails.
 
 ```yaml
 kubernetes:
-  namespace: production
   context: my-aks-cluster
+  namespace: production
   deploymentFile: k8s/deployment.yaml
   serviceFile: k8s/service.yaml
+  rollout: deployment/my-app
 ```
 
-What actually happens: optionally `kubectl config use-context`, then
-`kubectl apply -f` on the deployment file, then the service file if given.
-
-What does **not** happen, despite earlier documentation saying so: it does not
-wait for rollout, does not report deployment status, and does not fail the
-build if `kubectl` fails. Errors are caught and logged. If you want the build
-to depend on the rollout, do it as an ordinary step:
-
-```yaml
-- name: Wait for rollout
-  run: kubectl rollout status deployment/my-app -n production --timeout=5m
-```
-
-See [Kubernetes](kubernetes.md).
+`rollout` waits for the deployment to be ready, so the run fails if the new
+pods never start. See [Kubernetes](kubernetes.md).
 
 ---
 
@@ -336,12 +314,13 @@ write.
 ## Scheduling
 
 Schedules are cron expressions stored in the database, managed under a
-pipeline's Schedule tab or through `/api/schedules`. A scheduled run does not
-honour `requireConfirmation`, because that check lives in the browser.
+pipeline's Schedule tab or through `/api/schedules`. Adding, removing or
+pausing one needs `run` on the pipeline, since a schedule runs it.
 
-Only admins can create schedules. Deleting or toggling one, however, is open
-to any logged-in user, because of a duplicate route registration. See
-[Permissions](permissions.md#where-nothing-is-checked).
+A scheduled run does not stop for `requireConfirmation`: setting up the
+schedule is the confirmation, given once for every run it starts. A pipeline
+that must have a person agree to each run should use an approval step
+instead, which pauses scheduled runs too.
 
 ---
 

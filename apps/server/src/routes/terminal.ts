@@ -34,17 +34,16 @@ router.post("/create", authenticateToken, async (req, res) => {
     }
 
     try {
-        const io = req.app.get("io");
+        // A shell's output goes to the one socket that asked for it, and only
+        // if that socket signed in as the same person. Never broadcast: the
+        // old fallback to io.emit sent the session to every open browser.
         const activeSockets = req.app.get("sockets");
-        const socket = activeSockets?.get(socketId);
-
-        const emitFn = (event: string, data: any) => {
-            if (socket) {
-                socket.emit(event, data);
-            } else {
-                io.emit(event, data);
-            }
-        };
+        const socket = typeof socketId === "string" ? activeSockets?.get(socketId) : undefined;
+        if (!socket || socket.data?.userId !== userId) {
+            res.status(409).json({ error: "That browser connection is gone. Reload the page and open the terminal again." });
+            return;
+        }
+        const emitFn = (event: string, data: any) => { socket.emit(event, data); };
 
         const sessionId = terminalService.createSession(userId, emitFn);
 

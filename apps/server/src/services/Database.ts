@@ -3,11 +3,11 @@ import path from "path";
 import bcrypt from "bcrypt";
 import Logger from "../controllers/Logger.js";
 
-import { fileURLToPath } from "url";
+import fs from "fs";
+import { DB_PATH } from "../config/index.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dbPath = path.resolve(__dirname, "../../data/app.db");
+// In the data folder, so EZP_DATA_DIR moves the database with everything else.
+const dbPath = DB_PATH;
 
 export class DatabaseService {
   private static instance: DatabaseService;
@@ -15,6 +15,7 @@ export class DatabaseService {
 
   private constructor() {
     console.log("Using Database Path: ", dbPath);
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.initialize();
   }

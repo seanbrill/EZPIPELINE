@@ -1,3 +1,4 @@
+import type { Substep } from "./substeps.js";
 import { DatabaseService } from "./Database.js";
 import { Build } from "../types/other/index.js";
 import { v4 as uuidv4 } from 'uuid';
@@ -105,7 +106,7 @@ export class BuildService {
         const update = db.prepare(
             "UPDATE builds SET status = 'failed', error = ?, ended_at = ? WHERE id = ?"
         );
-        const note = db.prepare("INSERT INTO build_logs (build_id, message) VALUES (?, ?)");
+        const note = db.prepare("INSERT INTO build_logs (build_id, message, stream, level) VALUES (?, ?, 'system', 'error')");
         db.transaction(() => {
             for (const o of orphans) {
                 const where = o.active_step ? ` during "${o.active_step}"` : "";
@@ -187,10 +188,10 @@ export class BuildService {
      * a log method that hides its own failure is how a whole run turns up
      * empty and nobody can say why.
      */
-    public log(buildId: string, message: string) {
+    public log(buildId: string, message: string, stepIndex: number | null = null, stream: string | null = null, substep: string | null = null, level: "info" | "warn" | "error" | null = null) {
         try {
             const db = this.db.getDb();
-            db.prepare("INSERT INTO build_logs (build_id, message) VALUES (?, ?)").run(buildId, message);
+            db.prepare("INSERT INTO build_logs (build_id, message, step_index, stream, substep, level) VALUES (?, ?, ?, ?, ?, ?)").run(buildId, message, stepIndex, stream, substep, level === "info" ? null : level);
         } catch (e) {
             const why = e instanceof Error ? e.message : String(e);
             console.warn(`[BuildService] dropped a log line for build ${buildId}: ${why}`);
@@ -243,14 +244,111 @@ export class BuildService {
         `).all(perPipeline);
     }
 
+    /** Saved so approveBuild, which rebuilds the Build from this row, still knows at the second gate. */
+    public setAutoApprove(id: string, on: boolean) {
+        this.db.getDb().prepare("UPDATE builds SET auto_approve = ? WHERE id = ?").run(on ? 1 : 0, id);
+    }
+
+    /**
+     * Take a paused build for resuming. Atomic: of two approvals that arrive
+     * together (a double click, or a person racing auto-approve) exactly one
+     * gets true, so a gate cannot resume the rest of the run twice.
+     */
+    public claimPaused(id: string): boolean {
+        return this.db.getDb().prepare("UPDATE builds SET status = 'running' WHERE id = ? AND status = 'paused'").run(id).changes === 1;
+    }
+
+    public addApproval(id: string, record: { step: string; by: string; userId: number | null; at: string; auto: boolean }) {
+        const db = this.db.getDb();
+        const row = db.prepare("SELECT approvals FROM builds WHERE id = ?").get(id) as { approvals: string | null } | undefined;
+        let list: unknown[] = [];
+        try { list = row?.approvals ? JSON.parse(row.approvals) : []; } catch { list = []; }
+        list.push(record);
+        db.prepare("UPDATE builds SET approvals = ? WHERE id = ?").run(JSON.stringify(list), id);
+    }
+
     public getBuild(id: string): any {
         const db = this.db.getDb();
         return db.prepare("SELECT * FROM builds WHERE id = ?").get(id);
     }
 
+    public saveSubstep(buildId: string, s: Substep) {
+        try {
+            this.db.getDb().prepare(`
+                INSERT INTO build_substeps (build_id, path, name, status, started_at, ended_at, done, total, unit, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(build_id, path) DO UPDATE SET name = excluded.name, status = excluded.status,
+                  started_at = excluded.started_at, ended_at = excluded.ended_at, done = excluded.done,
+                  total = excluded.total, unit = excluded.unit, source = excluded.source
+            `).run(buildId, s.path, s.name, s.status, s.startedAt, s.endedAt, s.done, s.total, s.unit, s.source);
+        } catch (e) {
+            console.warn(`[BuildService] dropped substep ${s.path} for build ${buildId}: ${e instanceof Error ? e.message : e}`);
+        }
+    }
+
+    public getSubsteps(buildId: string): Substep[] {
+        return this.db.getDb().prepare(`
+            SELECT path, name, status, started_at AS startedAt, ended_at AS endedAt, done, total, unit, source
+            FROM build_substeps WHERE build_id = ?
+        `).all(buildId) as Substep[];
+    }
+
+    /** Substeps for many runs at once, for lists that draw a segmented bar on each tile. */
+    public getSubstepsFor(buildIds: string[]): Map<string, Substep[]> {
+        const out = new Map<string, Substep[]>();
+        if (buildIds.length === 0) return out;
+        const rows = this.db.getDb().prepare(`
+            SELECT build_id AS buildId, path, name, status, started_at AS startedAt, ended_at AS endedAt, done, total, unit, source
+            FROM build_substeps WHERE build_id IN (${buildIds.map(() => '?').join(',')})
+        `).all(...buildIds) as (Substep & { buildId: string })[];
+        for (const { buildId, ...s } of rows) {
+            const list = out.get(buildId) ?? [];
+            list.push(s);
+            out.set(buildId, list);
+        }
+        return out;
+    }
+
+    /**
+     * Per run, per top-level step ("11"): how many direct substeps there are and
+     * how many finished, or the step's own progress counter when it reports one.
+     * Enough for a tile's segmented bar and its "n/m" without sending the tree.
+     */
+    public substepSummary(buildIds: string[]): Map<string, Record<string, { done: number; total: number; failed: number; running: number; unit: string | null }>> {
+        const out = new Map<string, Record<string, { done: number; total: number; failed: number; running: number; unit: string | null }>>();
+        const db = this.db.getDb();
+        for (let i = 0; i < buildIds.length; i += 500) {
+            const ids = buildIds.slice(i, i + 500);
+            const marks = ids.map(() => '?').join(',');
+            const children = db.prepare(`
+                SELECT build_id AS b, substr(path, 1, instr(path, '.') - 1) AS step, count(*) AS total,
+                       sum(status = 'success') AS done, sum(status = 'failed') AS failed, sum(status = 'running') AS running
+                FROM build_substeps
+                WHERE build_id IN (${marks}) AND instr(path, '.') > 0 AND instr(substr(path, instr(path, '.') + 1), '.') = 0
+                GROUP BY build_id, step
+            `).all(...ids) as any[];
+            const own = db.prepare(`
+                SELECT build_id AS b, path AS step, done, total, unit, status FROM build_substeps
+                WHERE build_id IN (${marks}) AND instr(path, '.') = 0 AND total IS NOT NULL
+            `).all(...ids) as any[];
+            for (const r of children) {
+                const m = out.get(r.b) ?? {};
+                m[r.step] = { done: r.done, total: r.total, failed: r.failed, running: r.running, unit: null };
+                out.set(r.b, m);
+            }
+            // A step's own counter wins over counting its children: it is what the step said about itself.
+            for (const r of own) {
+                const m = out.get(r.b) ?? {};
+                m[r.step] = { done: r.done ?? 0, total: r.total, failed: r.status === 'failed' ? 1 : 0, running: r.status === 'running' ? 1 : 0, unit: r.unit };
+                out.set(r.b, m);
+            }
+        }
+        return out;
+    }
+
     public getBuildLogs(buildId: string): any[] {
         const db = this.db.getDb();
-        return db.prepare("SELECT message, timestamp FROM build_logs WHERE build_id = ? ORDER BY id ASC").all(buildId);
+        return db.prepare("SELECT id, message, timestamp, step_index AS stepIndex, stream, substep, level FROM build_logs WHERE build_id = ? ORDER BY id ASC").all(buildId);
     }
 
     public deleteBuild(id: string) {
@@ -259,6 +357,7 @@ export class BuildService {
         // If not using foreign keys with cascade delete, we might need to delete logs first.
         // Assuming simple sqlite setup, let's explicit delete logs first to be safe.
         db.prepare("DELETE FROM build_logs WHERE build_id = ?").run(id);
+        db.prepare("DELETE FROM build_substeps WHERE build_id = ?").run(id);
         db.prepare("DELETE FROM builds WHERE id = ?").run(id);
     }
 
@@ -284,6 +383,7 @@ export class BuildService {
 
         const placeholders = ids.map(() => '?').join(',');
         db.prepare(`DELETE FROM build_logs WHERE build_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM build_substeps WHERE build_id IN (${placeholders})`).run(...ids);
         // BY ID in both branches. Deleting by target, or truncating the table,
         // is what took the in-flight rows the SELECT above just spared.
         db.prepare(`DELETE FROM builds WHERE id IN (${placeholders})`).run(...ids);
@@ -330,6 +430,7 @@ export class BuildService {
 
         const idPlaceholders = ids.map(() => '?').join(',');
         db.prepare(`DELETE FROM build_logs WHERE build_id IN (${idPlaceholders})`).run(...ids);
+        db.prepare(`DELETE FROM build_substeps WHERE build_id IN (${idPlaceholders})`).run(...ids);
         // BY ID, not by target: deleting by target again would take the
         // running rows the SELECT above deliberately spared.
         db.prepare(`DELETE FROM builds WHERE id IN (${idPlaceholders})`).run(...ids);

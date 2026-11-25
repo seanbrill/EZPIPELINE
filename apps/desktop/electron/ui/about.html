@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'">
+<title>About EZPipeline</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<div class="drag"></div>
+<main style="flex:1;display:flex;flex-direction:column;align-items:center;text-align:center;padding:24px 32px 24px">
+  <svg class="mark" width="64" height="64" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#10b981"/><path d="M12.5 9.5H6.5V22.5H12.5M6.5 16H20.5M16 9.5H25L16 22.5H23" fill="none" stroke="#022c22" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 16H20.5L16 22.5H25" fill="none" stroke="#ecfdf5" stroke-width="0.9" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="16" r="2.3" fill="#022c22"/><circle cx="6.5" cy="16" r="1.15" fill="#ecfdf5"/><circle cx="20.5" cy="16" r="2.3" fill="#022c22"/><circle cx="20.5" cy="16" r="1.15" fill="#ecfdf5"/><circle cx="25" cy="22.5" r="2.65" fill="#022c22"/><circle cx="25" cy="22.5" r="1.5" fill="#ecfdf5"/></svg>
+  <h2 style="margin:14px 0 2px;font-size:20px;font-weight:600"><b>EZ</b><span style="font-weight:500">Pipeline</span></h2>
+  <div class="faint mono" style="font-size:12.5px" id="ver"></div>
+  <span class="badge" id="upd" style="margin-top:10px"><span class="dot"></span><span id="upd-text">Checking…</span></span>
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 14px;text-align:left;font-size:13px;margin-top:22px;width:100%;user-select:text">
+    <span class="faint">Server</span><span id="srv"></span>
+    <span class="faint" id="data-k">Data</span><span class="mono" style="font-size:12px;word-break:break-all" id="data"></span>
+    <span class="faint">Built on</span><span id="built"></span>
+    <span class="faint">Licence</span><span>Apache 2.0, open source</span>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:auto;padding-top:20px">
+    <button class="btn btn-secondary btn-sm" id="show-data">Show data folder</button>
+    <button class="btn btn-ghost btn-sm" id="gh">GitHub</button>
+    <button class="btn btn-ghost btn-sm" id="lic">Licence</button>
+  </div>
+</main>
+<script src="about.js"></script>
+</body>
+</html>

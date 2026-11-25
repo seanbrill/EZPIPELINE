@@ -39,6 +39,11 @@ const allowed = (req: Request, res: Response, group: string, action: "view" | "e
     res.status(400).json({ error: "A group is required" });
     return false;
   }
+  // The instance-wide key reaches every pipeline, so it is the admin's alone.
+  if (group === "*" && !user?.isAdmin) {
+    res.status(403).json({ error: "Only an admin can manage the instance-wide key" });
+    return false;
+  }
   const ok =
     action === "edit"
       ? permissions.checkAccess(user.id, group, "write") ||

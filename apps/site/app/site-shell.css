@@ -1,0 +1,148 @@
+/* What the frames leave to the page around them: the one .wrap, the header's links on every
+   page, the docs title band, the bits of the docs that only exist in a browser (the search
+   box's input, the phone's page select), the skip link, the 404, and every rule for a
+   narrower window. site.css is generated from the design sheet; this file is written by hand. */
+
+html{scroll-behavior:smooth;scroll-padding-top:16px}
+body{min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+main{flex:1}
+img,svg{max-width:100%}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--primary-hi);outline-offset:2px;border-radius:4px}
+.wrap{width:min(1200px,100% - 64px);margin:0 auto;position:relative}
+
+.skip{position:absolute;left:12px;top:-60px;z-index:50;padding:10px 14px;border-radius:var(--r-sm);background:var(--primary);color:var(--primary-ink);font-weight:600}
+.skip:focus{top:12px}
+
+/* Header: the frames scope these per page; the header is shared, so they are global here. */
+.sn .links{display:flex;gap:30px}
+.sn .links a{font-size:14px;font-weight:500;color:var(--text-2)}
+.sn .links a:hover,.sn .gh:hover{color:var(--text)}
+.sn .gh{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:rgba(255,255,255,.02);color:var(--text-2);font-size:13px;font-weight:500}
+.ftg a:hover,.ftb a:hover{color:var(--text)}
+.ftb .ff{white-space:nowrap}
+
+/* Docs: the title band and its backdrop, and the parts the frame drew as pictures. */
+.p-doc{position:relative;background:var(--bg)}
+.p-doc .dk{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
+.p-doc .dk .wrap{padding:56px 0 40px}
+.p-doc .kick{display:block;margin-bottom:12px;font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--primary-hi)}
+.p-doc .hgrid{position:absolute;left:0;right:0;top:-68px;height:620px;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:60px 60px;background-position:center -1px;-webkit-mask-image:radial-gradient(ellipse 40% 55% at 22% 10%,#000 25%,transparent 80%);mask-image:radial-gradient(ellipse 40% 55% at 22% 10%,#000 25%,transparent 80%);pointer-events:none}
+.p-doc .hglow{position:absolute;left:0;top:-320px;width:1000px;height:700px;background:radial-gradient(closest-side,rgba(16,185,129,.2),rgba(16,185,129,.04) 60%,transparent);pointer-events:none}
+.p-doc .dsrch input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;color:var(--text);font:13.5px var(--font)}
+.p-doc .dsrch input::placeholder{color:var(--text-3)}
+.p-doc .dsrch:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+.p-doc .dnone{padding:10px;font-size:13px;color:var(--text-3)}
+.p-doc .dsel{display:none}
+.p-doc .doc{min-width:0}
+.p-doc .doc pre{position:relative}
+.p-doc .doc img{max-width:100%}
+.p-doc .doc :not(pre)>code{overflow-wrap:anywhere}
+.p-doc .doc td code,.p-doc .doc th code{overflow-wrap:normal;white-space:nowrap}
+.lp .code{overflow-x:auto}
+.p-doc .doc h2,.p-doc .doc h3{scroll-margin-top:16px}
+
+/* Install: the tabs are buttons, and the hash shows its value. */
+.p-in .ost .tab{display:inline-flex;align-items:center;gap:8px}
+.p-in .hash .hv{flex:1;min-width:0}
+.p-in .ac .term{overflow-x:auto;white-space:nowrap}
+.p-in .wf li a{color:var(--text-2)}
+.p-in .wf li a:hover{color:var(--text)}
+
+/* Landing: the three points under the live log (an inline grid in the frame). */
+.lp .f3{display:grid;grid-template-columns:repeat(3,1fr);gap:40px;margin-top:40px}
+
+/* 404 */
+.p-404{position:relative;padding:120px 0 80px;text-align:center}
+.p-404 .kick{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--primary-hi)}
+.p-404 h1{margin-top:16px;font-size:44px;letter-spacing:-.035em}
+.p-404 .lead{margin-top:12px;font-size:17px;color:var(--text-2)}
+.p-404 .cta{margin-top:28px;display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+
+/* ---- Narrower windows ---- */
+
+@media (max-width:1180px){
+  .p-doc .dl{grid-template-columns:220px minmax(0,1fr);gap:40px}
+  .p-doc .toc{display:none}
+  .lp .how,.lp .os,.lp .lv-grid{grid-template-columns:1fr}
+  .lp .split,.lp .split.flip{grid-template-columns:1fr 1fr}
+  .p-dl .srv{grid-template-columns:1fr 1fr}
+  .p-none .plan{grid-template-columns:repeat(3,1fr)}
+}
+
+@media (max-width:900px){
+  .wrap{width:calc(100% - 40px)}
+  .sn .links{display:none}
+  .ftg{grid-template-columns:1fr 1fr}
+  .ftg .about{grid-column:1/-1}
+  .ftb{flex-direction:column;align-items:flex-start;gap:14px}
+
+  .p-doc .dl{grid-template-columns:minmax(0,1fr);padding:24px 0 64px}
+  .p-doc .dnav{display:none}
+  .p-doc .dsel{display:flex;flex-direction:column;gap:8px;margin-bottom:24px}
+  .p-doc .dsel select{height:40px;padding:0 12px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--bg-2);color:var(--text);font:14px var(--font)}
+
+  .lp .split,.lp .split.flip,.lp .bento,.lp .tst,.lp .sh,.lp .rgrid{grid-template-columns:1fr}
+  .lp .clouds{grid-template-columns:1fr}
+  .lp .tiles{grid-template-columns:repeat(4,1fr)}
+  .lp .warnc{grid-template-columns:1fr;padding:28px 24px}
+  .lp .f3{grid-template-columns:1fr;gap:24px}
+  .lp .kv-tabs,.lp .seg{overflow-x:auto;max-width:100%}
+
+  .p-dl .plat,.p-dl .srv,.p-dl .vfy,.p-dl .vb,.p-dl .ghl,.p-none .srv,.p-none .ghl{grid-template-columns:1fr}
+  .p-dl .vb{padding:4px 20px 24px}
+  .p-none .plan{grid-template-columns:repeat(2,1fr)}
+  .p-in .ig{grid-template-columns:1fr}
+  .p-dl .sh,.p-none .sh{flex-direction:column;align-items:flex-start;gap:12px}
+  .p-dl .dh,.p-none .dh{padding-left:16px;padding-right:16px}
+  .p-dl .fnote,.p-none .fnote{flex-wrap:wrap;text-align:center}
+  .p-none .rf{flex-wrap:wrap}
+  .p-none .rf .grow{display:none}
+  .p-none .or{flex-direction:column;gap:6px}
+  .p-dl .detect,.p-none .detect{display:block;text-align:center;line-height:1.5}
+  .p-dl .detect svg,.p-none .detect svg{vertical-align:-2px;margin-right:6px}
+  .p-in .ty .wrap{flex-wrap:wrap}
+  .p-in .wf{width:100%}
+}
+
+@media (max-width:640px){
+  .wrap{width:calc(100% - 32px)}
+  .sn .gh{display:none}
+  .ftg{grid-template-columns:1fr}
+
+  .p-doc .dk .wrap{padding:36px 0 28px}
+  .p-doc .dk h1,.p-in .ty h1,.p-404 h1{font-size:32px}
+  .p-doc .dk .lead,.p-in .ty .lead{font-size:16px}
+  .p-doc .dpn{grid-template-columns:1fr}
+  .p-doc .doc pre{font-size:12px}
+
+  .lp h1.disp{font-size:44px}
+  .lp h2.h2{font-size:32px}
+  .lp .final{padding:80px 0 88px}
+  .lp .final h2{font-size:36px}
+  .lp .cta{flex-direction:column;align-items:stretch}
+  .lp .btn-xl{width:100%}
+  .lp .shot{display:none}
+  .lp .tiles{grid-template-columns:repeat(2,1fr)}
+  .lp .gr,.lp .axis{grid-template-columns:96px 1fr 32px}
+  .lp .dock{max-width:100%;height:auto;padding:10px 12px;white-space:normal;word-break:break-all;text-align:left}
+
+  .p-dl .dh h1,.p-none .dh h1{font-size:36px}
+  .p-dl .appic,.p-none .appic{width:80px;height:80px}
+  .p-dl .get,.p-none .get{width:100%;padding:18px 16px}
+  .p-dl .bigbtn,.p-none .bigbtn{width:100%;flex-wrap:wrap;height:auto;min-height:56px;padding:10px 16px}
+  .p-dl .tr{grid-template-columns:minmax(0,1fr) 72px;padding:0 14px}
+  .p-dl .tr .pf,.p-dl .tr .sha,.p-dl .tr.h span:nth-child(2),.p-dl .tr.h span:nth-child(4){display:none}
+  .p-none .plan{grid-template-columns:1fr}
+  .p-dl .term,.p-none .term,.p-in .term{overflow-x:auto}
+
+  .p-in .ty .wrap{gap:18px}
+  .p-in .bigok{width:56px;height:56px;border-radius:16px}
+  .p-in .st{grid-template-columns:36px 1fr}
+  .p-in .finder,.p-in .adm{width:100%}
+  .p-in .arr{width:60px}
+  .p-in .next{flex-direction:column;align-items:stretch}
+  .p-in .ost{overflow-x:auto}
+  .p-in .ig>*,.p-in .st>div,.p-in .wn .grow{min-width:0}
+  .p-in .mono,.p-in .term,.p-dl .term,.p-none .term,.p-dl .fname{word-break:break-all;white-space:normal}
+}

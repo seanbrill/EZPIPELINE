@@ -38,8 +38,8 @@ Runs `scripts/start-dev.ts`, which:
 3. starts `PORT=<server> npm run dev:server` and `npm run dev:client` under
    `concurrently`, colour-prefixed, with `--kill-others`
 
-Step 2 is unconditional. If you have something unrelated on port 5000 it dies
-without being asked.
+Step 2 is unconditional, so keep those two ports (5001 and 5173 as shipped)
+for EZPIPELINE.
 
 `--kill-others` means the two halves live and die together: a TypeScript error
 that stops the server also stops Vite.
@@ -55,7 +55,7 @@ The `lsof` call makes this macOS and Linux only. On Windows, run
 ### `npm run dev:client`
 
 `vite --open` in `apps/client`. HMR, and it opens a browser. The port comes
-from `ports.client` in `ezpipeline.config.json`, which ships as **5000**.
+from `ports.client` in `ezpipeline.config.json`, which ships as 5173.
 
 ---
 
@@ -92,62 +92,34 @@ a dependency to a workspace.
 
 ### `npm run reset`
 
-**Destructive, and it does not ask.**
+**Destructive.** It deletes data, so it asks first.
 
-With no arguments it prints one line and immediately performs a **Smart
-Reset**: users and the database, plugins, the AI sandbox, logs and build
-history are deleted. Pipeline configuration, meaning YAML, `.env` and
-`resources`, is preserved.
-
-```
-$ npm run reset
-No flags provided. Defaulting to Smart Reset...
-   (Use 'npm run reset -- --menu' to see options)
-```
-
-There is no confirmation prompt. Older documentation said "Script will prompt
-for confirmation before proceeding". It does not, and that sentence was the
-most dangerous thing in the old documentation set.
-
-To get the menu, pass `--menu`, with the `--` that tells npm to forward the
-argument:
+With no arguments it shows a menu, and pressing Enter cancels. Without a
+terminal to ask in (CI, a pipe) it resets nothing and exits 1.
 
 ```bash
-npm run reset -- --menu
+npm run reset              # the menu
+npm run reset -- --logs    # straight to one action, no menu
 ```
 
-| Option | What it removes |
-|---|---|
-| 1 | Smart Reset: users, database, plugins, sandbox, logs, build history. **Default** |
-| 2 | Factory Reset: everything, including all pipelines |
-| 3 | Pipelines only |
-| 4 | Logs only |
-| 5 | Users and database only |
-| 6 | Plugins only |
-| 7 | AI sandbox only |
-| 8 | npm cache only |
-| 9 | Cancel |
+| Option | Flag | What it removes |
+|---|---|---|
+| 1 | `--smart` | Smart Reset: users, database, plugins, logs, and each pipeline's builds, history and versions. Pipeline YAML, `.env` and resources are kept |
+| 2 | `--everything` | Factory Reset: everything, including all pipelines |
+| 3 | `--pipelines` | Pipelines only |
+| 4 | `--logs` | Logs only |
+| 5 | `--users` | Users and database only |
+| 6 | `--plugins` | Plugins only |
+| 7 | `--cache` | npm cache only |
+| 8 | | Cancel |
 
-Pressing Enter takes option 1.
-
-Flags work directly too, and skip the menu:
-
-```bash
-npm run reset -- --logs
-npm run reset -- --users
-npm run reset -- --everything
-```
-
-Available: `--everything`, `--pipelines`, `--plugins`, `--logs`, `--claude`,
-`--users`, `--cache`, `--smart`, `--menu` (or `-m`).
-
-The database it deletes is `apps/server/data/app.db`.
+It works on the same folders the server uses: `EZP_DATA_DIR` and
+`EZP_LOGS_DIR` when set, otherwise `paths.data` and `paths.logs` from
+`ezpipeline.config.json`. It prints the data folder before it starts.
 
 ### `npm run clean`
 
-An alias for `npm run reset`. Same behaviour, same lack of a prompt. A command
-called "clean" that silently deletes every user account is worth knowing about
-before you type it out of habit.
+An alias for `npm run reset`, menu and all.
 
 ---
 

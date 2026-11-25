@@ -71,8 +71,13 @@ rejects it on every path except `/auth/setup/...`. Its only purpose is letting
 someone attach an email address so they can then receive codes. From the
 outside it looks like a login that half worked; it is deliberate.
 
-Passwords are bcrypt with 10 rounds. There is **no complexity requirement** of
-any kind, and no rate limit on this endpoint.
+Passwords are bcrypt with 10 rounds, and at least 12 characters.
+
+Failed sign-ins are limited: 10 on one account, or 30 from one address, within
+15 minutes, and the next attempt answers `429 too_many_attempts` with a
+`Retry-After` header. A successful sign-in clears the account's count. A
+username that does not exist takes as long to refuse as a wrong password, so
+the timing does not say which accounts exist.
 
 ---
 
@@ -146,9 +151,7 @@ routes under `/api/agent`, and a user JWT does not open those routes.
 Stored hashed in the `agent_tokens` table, with a name, a scope string and a
 `last_used_at` that is updated on each use.
 
-**None of those three routes checks for admin.** Any account that can log in
-can mint an agent token. That is a gap in `apps/server/src/routes/index.ts`,
-reported not fixed.
+All three are for admins only.
 
 What an agent token can reach is narrow, and narrower than a user JWT:
 
@@ -167,40 +170,29 @@ where environment files are blocked entirely rather than gated by permission.
 
 | Method | Path | Who |
 |---|---|---|
-| GET | `/api/users` | **anyone logged in** |
+| GET | `/api/users` | anyone signed in; everyone else's email only for admins and user managers |
 | POST | `/api/users` | admin or `can_manage_users` |
 | PATCH | `/api/users/:id` | admin, or self |
+| POST | `/api/users/:id/password` | admin, for someone else |
 | DELETE | `/api/users/:id` | admin, not self, not the primary admin |
-| POST | `/api/change-password` | self only |
+| POST | `/api/change-password` | self, with the current password |
 
-Two things about creation that will bite a client author:
-
-`POST /api/users` accepts only `{username, password, isAdmin}`. Send
-`displayName` or `canManageUsers` and they are dropped silently, because the
-INSERT names three columns. Set them afterwards with `PATCH`.
-
-The response is `{"message": "User created"}` with no id. To find the new
-user, list users again.
-
-`GET /api/users` has no role check, verified with a non-admin token, and
-returns every username and email address. It returns `email` and `created_at`
-but not `display_name`.
+`POST /api/users` takes `username`, `password`, and optionally `email`,
+`displayName`, `isAdmin` and `canManageUsers` (those two only from an admin).
+It answers `{"message":"User created","id":7}`.
 
 ### Resetting someone else's password
 
-There is no endpoint for it. `POST /api/change-password` requires the current
-password and only ever acts on the caller.
-
-The options are: delete and recreate the account, or write a bcrypt hash into
-the database directly.
+There is no reset by email. An admin sets a new one:
 
 ```bash
-node -e 'console.log(require("bcrypt").hashSync("newpassword", 10))'
-sqlite3 apps/server/data/app.db \
-  "UPDATE users SET password='<hash>' WHERE username='someone';"
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"newPassword":"at-least-twelve-characters"}' \
+  localhost:5001/api/users/7/password
 ```
 
-The column is `password`, not `password_hash`.
+Give it to the person by a channel you trust, and have them change it under
+Account. Nobody can set the primary admin's password but the primary admin.
 
 ---
 
@@ -219,22 +211,18 @@ interface indicates it is off.
 
 ---
 
-## What is not implemented
-
-Listing these is more useful than a "best practices" section recommending
-things that are not there.
+## What is not built in
 
 | | |
 |---|---|
-| Rate limiting on login | None, anywhere. Put it in the reverse proxy |
-| Password complexity rules | None |
-| Password reset by email | Not implemented. Codes are only used for MFA |
-| Token refresh | None. 24 hours then log in again |
-| `httpOnly` cookie storage | Not implemented |
-| Account lockout after failures | None |
-| Audit log of security events | None. Winston logs requests, not a distinct audit trail |
-| TOTP or hardware MFA | Not implemented. The `mfa_secret` column is unused |
+| Password reset by email | Not built. An admin sets a new password, above |
+| Token refresh | None. Tokens last 24 hours, then you sign in again |
+| `httpOnly` cookie storage | No. The token is kept in `localStorage` |
+| TOTP or hardware MFA | Not built. Codes are sent by email |
 | SSO, OIDC, LDAP | None |
+
+Sign-ins and every change made through the API are recorded in the audit log,
+which admins read under Settings (`GET /api/admin/audit`).
 
 ---
 
@@ -278,11 +266,10 @@ Dumped from a live database, not transcribed.
 - [ ] `auth.required` is `true`
 - [ ] HTTPS everywhere
 - [ ] SMTP tested **before** MFA is enforced
-- [ ] Rate limiting on `/api/login` at the proxy
 - [ ] `chmod 600 apps/server/data/app.db`
 - [ ] You know `useTerminal` is a shell on the host, and `useClaude` is edit
       access to every pipeline's YAML and environment
-- [ ] You have read [where permissions are not checked](permissions.md#where-nothing-is-checked)
+- [ ] You have read [which routes check what](permissions.md#which-routes-check-what)
 
 ---
 

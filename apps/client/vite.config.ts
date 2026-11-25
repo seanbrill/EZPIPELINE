@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -21,6 +22,9 @@ try {
 } catch (e) {
   console.warn("Could not load ezpipeline.config.json", e);
 }
+// Set on the command line, it wins: a second server (a worktree, a test run)
+// must not have its UI quietly talking to the instance on the config's port.
+if (process.env.VITE_SERVER_PORT) serverPort = Number(process.env.VITE_SERVER_PORT);
 
 
 // ── THE BUILD STAMP THE HEADER SHOWS ───────────────────────────────────────
@@ -64,51 +68,22 @@ try {
 const VERSION_MODULE = 'virtual:app-version';
 
 function readGitStamp(root: string): { build: number; version: string; commit: string; branch: string } {
-  const gitDir = path.resolve(root, '../../.git');
+  // The version is the repo's package.json: one number for the server, this client, the
+  // desktop app and the release. git adds which commit, for the tooltip.
   const out = { build: 0, version: 'v0.0.0', commit: 'unknown', branch: 'unknown' };
   try {
-    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
-    const ref = head.startsWith('ref: ') ? head.slice(5).trim() : null;
-
-    if (ref) {
-      out.branch = ref.replace(/^refs\/heads\//, '');
-      const refFile = path.join(gitDir, ref);
-      if (fs.existsSync(refFile)) {
-        out.commit = fs.readFileSync(refFile, 'utf-8').trim().slice(0, 7);
-      } else {
-        // Packed away, which is how a fresh clone stores refs.
-        const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf-8');
-        const line = packed.split('\n').find(l => l.endsWith(' ' + ref));
-        if (line) out.commit = line.split(' ')[0].slice(0, 7);
-      }
-    } else {
-      // Detached HEAD holds the sha itself.
-      out.commit = head.slice(0, 7);
-      out.branch = 'detached';
-    }
-
-    const reflog = path.join(gitDir, 'logs', 'HEAD');
-    if (fs.existsSync(reflog)) {
-      out.build = fs.readFileSync(reflog, 'utf-8').split('\n').filter(Boolean).length;
-    }
-
-    // ── AND IT READS AS A VERSION, BECAUSE THAT IS WHAT IT IS FOR ──────────
-    //
-    // `b81` was accurate and unfriendly. The whole job of this string is to be
-    // glanced at and compared with the one from a minute ago, and v1.0.81 ->
-    // v1.0.82 does that with no explanation attached.
-    //
-    // NO ROLLOVER AT 100. Making the patch wrap into the minor would look
-    // tidier - v1.1.0 after v1.0.99 - and it would put a 99 next to a 0 and
-    // ask the reader to know the rule before they can tell which is newer. A
-    // number that only ever goes up needs no rule. v1.0.147 is uglier than
-    // v1.1.47 and it is never ambiguous, which matters more for something
-    // whose entire purpose is answering "did it change".
-    out.version = `v1.0.${out.build}`;
+    out.version = `v${JSON.parse(fs.readFileSync(path.resolve(root, '../../package.json'), 'utf-8')).version}`;
   } catch {
     // A stamp that cannot be read says so in the corner. It must never be the
     // reason the application fails to build.
   }
+  // `git` itself, not .git/HEAD: in a worktree .git is a file pointing elsewhere.
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  try {
+    out.commit = git('rev-parse', '--short=7', 'HEAD');
+    out.branch = git('rev-parse', '--abbrev-ref', 'HEAD');
+    out.build = Number(git('rev-list', '--count', 'HEAD')) || 0;
+  } catch { /* not a git checkout: a source download */ }
   return out;
 }
 
@@ -136,8 +111,8 @@ function appVersionPlugin() {
       // this runs in a container reading a macOS bind mount, where inotify
       // events are not delivered reliably whatever the watcher is told.
       //
-      // Polling two small files every few seconds is not elegant and it does
-      // work. It is also the cheapest thing in this process by a wide margin.
+      // Asking git every few seconds is not elegant and it does work, in a
+      // worktree too. It is still cheap next to everything else in this process.
       let last = JSON.stringify(readGitStamp(__dirname));
       const timer = setInterval(() => {
         const now = JSON.stringify(readGitStamp(__dirname));

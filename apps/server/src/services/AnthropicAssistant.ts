@@ -59,6 +59,7 @@ import { assertConfigFile, containedPath, isEnvFile } from "../config/pipelinePa
 import { ConfigController } from "../controllers/ConfigController.js";
 import EZPipelineController from "../controllers/EZPipelineController.js";
 import Logger from "../controllers/Logger.js";
+import { PermissionsService, type PermissionType } from "./PermissionsService.js";
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -99,6 +100,8 @@ const MAX_SESSIONS = 50;
 type Emit = (event: string, data: unknown) => void;
 
 interface Session {
+    /** Whose conversation this is: every tool call is checked against their grants. */
+    userId: number;
     history: Anthropic.MessageParam[];
     /** One in-flight request per socket. A second one would interleave into the same history. */
     busy: boolean;
@@ -142,7 +145,48 @@ function fail(message: string): ToolOutcome {
 
 interface AssistantTool {
     definition: Anthropic.Tool;
-    run: (input: Record<string, unknown>) => Promise<ToolOutcome> | ToolOutcome;
+    run: (input: Record<string, unknown>, who: Caller) => Promise<ToolOutcome> | ToolOutcome;
+}
+
+/** The person the assistant is acting for. */
+interface Caller { userId: number }
+
+/**
+ * The assistant can do for someone only what they could do themselves, on
+ * the pipelines where they have "Use Claude". It used to check only that the
+ * path was inside the pipelines folder, so "Use Claude" on one pipeline let
+ * someone have it read and rewrite every other pipeline's YAML and env.
+ */
+function mayOnPipeline(who: Caller, pipelineId: string, flag: PermissionType): boolean {
+    const p = PermissionsService.getInstance();
+    return p.checkPermission(who.userId, pipelineId, flag) && p.checkPermission(who.userId, pipelineId, "useClaude");
+}
+
+/** The pipeline whose folder holds this absolute path, if any. */
+function pipelineAt(full: string): { id: string; appName: string } | undefined {
+    return (EZPipelineController.instance?.targets ?? []).find((t) => {
+        if (!t.filePath) return false;
+        const dir = path.dirname(t.filePath);
+        return full === dir || full.startsWith(dir + path.sep);
+    });
+}
+
+/**
+ * Resolves a path for a tool and checks the caller may use it, or says why not.
+ * A file outside every pipeline's folder (a group's env, say) is for admins,
+ * as it is through the API.
+ */
+function authorisePath(who: Caller, rel: string, flags: PermissionType[]): string {
+    const full = containedPath(PIPELINES_DIR, rel);
+    const owner = pipelineAt(full);
+    if (!owner) {
+        if (PermissionsService.getInstance().isAdmin(who.userId)) return full;
+        throw new Error(`"${rel}" is not inside a pipeline you can use with the assistant.`);
+    }
+    if (!flags.some((f) => mayOnPipeline(who, owner.id, f))) {
+        throw new Error(`You do not have ${flags.map((f) => `"${f}"`).join(" or ")} with "Use Claude" on ${owner.appName}, so the assistant cannot do that for you.`);
+    }
+    return full;
 }
 
 /**
@@ -169,13 +213,13 @@ function buildTools(): AssistantTool[] {
                 description: "List every pipeline, with its group, config file path and the status of its most recent build.",
                 input_schema: { type: "object", properties: {} },
             },
-            run: () => {
-                const targets = pipelines()?.targets ?? [];
+            run: (_input, who) => {
+                const targets = (pipelines()?.targets ?? []).filter((t) => mayOnPipeline(who, t.id, "view"));
                 if (targets.length === 0) {
                     // Not "[]". The difference between "no pipelines exist" and
                     // "the lookup failed" is the whole reason this reads as a
                     // sentence.
-                    return ok("There are no pipelines configured yet.");
+                    return ok("There are no pipelines you can use with the assistant.");
                 }
                 const builds = pipelines()?.builds ?? [];
                 const rows = targets.map((target) => {
@@ -206,14 +250,14 @@ function buildTools(): AssistantTool[] {
                     required: ["path"],
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const target = str(input, "path");
                 if (!target) return fail(`"path" is required and must be a non-empty string.`);
                 try {
                     // An allowlist: .env was blocked, but an SSH key, a .pem or
                     // a credentials.json sitting in the pipelines tree was not.
                     assertConfigFile(target);
-                    const full = containedPath(PIPELINES_DIR, target);
+                    const full = authorisePath(who, target, ["editYaml"]);
                     if (!fs.existsSync(full)) return fail(`No file at "${target}". Use list_pipelines to see the paths that exist.`);
                     if (fs.statSync(full).isDirectory()) return fail(`"${target}" is a directory, not a file.`);
                     return ok(fs.readFileSync(full, "utf-8"));
@@ -236,7 +280,7 @@ function buildTools(): AssistantTool[] {
                     required: ["path", "content"],
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const target = str(input, "path");
                 const content = typeof input.content === "string" ? input.content : undefined;
                 if (!target) return fail(`"path" is required and must be a non-empty string.`);
@@ -246,7 +290,11 @@ function buildTools(): AssistantTool[] {
                 // able to overwrite a shell script.
                 try {
                     assertConfigFile(target);
-                    containedPath(PIPELINES_DIR, target);
+                    authorisePath(who, target, ["editYaml"]);
+                } catch (e: any) {
+                    return fail(e.message);
+                }
+                try {
                     // MCPServer's description promises validation and its
                     // implementation does not do it. Here it is actually done,
                     // because a pipeline file that no longer parses takes the
@@ -276,11 +324,12 @@ function buildTools(): AssistantTool[] {
                     required: ["path"],
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const target = str(input, "path");
                 if (!target) return fail(`"path" is required and must be a non-empty string.`);
                 try {
-                    containedPath(PIPELINES_DIR, target);
+                    // Names alone: editYaml is enough, as with keysOnly in the API.
+                    authorisePath(who, target, ["editEnv", "editYaml"]);
                     const keys = config().getEnvKeys(target);
                     if (keys.length === 0) return ok(`${target} exists but defines no variables.`);
                     return ok(`Variables defined in ${target} (names only):\n${keys.join("\n")}`);
@@ -307,7 +356,7 @@ function buildTools(): AssistantTool[] {
                     required: ["path", "key", "value"],
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const target = str(input, "path");
                 const key = str(input, "key");
                 const value = typeof input.value === "string" ? input.value : undefined;
@@ -323,7 +372,7 @@ function buildTools(): AssistantTool[] {
                     return fail(`This tool only writes environment files, and "${target}" is not one.`);
                 }
                 try {
-                    containedPath(PIPELINES_DIR, target);
+                    authorisePath(who, target, ["editEnv"]);
                     let raw = "";
                     try {
                         raw = config().getFileContent("env", target);
@@ -357,7 +406,10 @@ function buildTools(): AssistantTool[] {
                 description: "List the NAMES of the global environment variables shared by every pipeline. Values are never returned.",
                 input_schema: { type: "object", properties: {} },
             },
-            run: () => {
+            run: (_input, who) => {
+                if (!PermissionsService.getInstance().checkPermission(who.userId, "global-env", "view")) {
+                    return fail(`You do not have "view" on the global environment.`);
+                }
                 try {
                     const keys = config().getGlobalEnvKeys();
                     if (keys.length === 0) return ok("No global environment variables are set.");
@@ -381,9 +433,12 @@ function buildTools(): AssistantTool[] {
                     required: ["key", "value"],
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const key = str(input, "key");
                 const value = typeof input.value === "string" ? input.value : undefined;
+                if (!PermissionsService.getInstance().checkPermission(who.userId, "global-env", "editEnv")) {
+                    return fail(`You do not have "editEnv" on the global environment.`);
+                }
                 if (!key) return fail(`"key" is required and must be a non-empty string.`);
                 if (value === undefined) return fail(`"value" is required and must be a string.`);
                 if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
@@ -404,7 +459,10 @@ function buildTools(): AssistantTool[] {
                 description: "List the shared resource files (scripts, certificates, templates) available to every pipeline.",
                 input_schema: { type: "object", properties: {} },
             },
-            run: () => {
+            run: (_input, who) => {
+                if (!PermissionsService.getInstance().isAdmin(who.userId)) {
+                    return fail("Only an admin can see global resources.");
+                }
                 try {
                     const resources = config().getGlobalResources();
                     if (resources.length === 0) return ok("There are no global resources.");
@@ -470,10 +528,10 @@ function buildTools(): AssistantTool[] {
                     },
                 },
             },
-            run: (input) => {
+            run: (input, who) => {
                 const group = str(input, "group");
                 try {
-                    const history = pipelines()?.getBuildHistory(group) ?? [];
+                    const history = (pipelines()?.getBuildHistory(group) ?? []).filter((entry: any) => mayOnPipeline(who, entry.pipelineId, "view"));
                     if (history.length === 0) {
                         return ok(group ? `No builds have been recorded for group "${group}".` : "No builds have been recorded yet.");
                     }
@@ -638,12 +696,6 @@ export class AnthropicAssistant {
     public status() {
         const configured = this.isConfigured();
         return {
-            // Kept for the existing client, which switches on these two names.
-            // "installed" now means the engine is present in the build, which
-            // it always is - there is nothing left to install. "loggedIn" means
-            // a key is configured. The honest names are the two fields below.
-            installed: true,
-            loggedIn: configured,
             engine: "anthropic-api",
             configured,
             model: configured ? model() : null,
@@ -664,9 +716,9 @@ export class AnthropicAssistant {
      * model to produce a greeting the client then replaced with its own
      * "Agent Connected" banner anyway.
      */
-    public start(socketId: string, emit: Emit): void {
+    public start(socketId: string, userId: number, emit: Emit): void {
         this.sweep();
-        this.sessions.set(socketId, { history: [], busy: false, lastUsed: Date.now() });
+        this.sessions.set(socketId, { userId, history: [], busy: false, lastUsed: Date.now() });
         this.evictOldest();
 
         if (!this.isConfigured()) {
@@ -739,7 +791,7 @@ export class AnthropicAssistant {
      * to the person over the socket, and the HTTP caller has long since
      * returned 202.
      */
-    public async send(socketId: string, input: string, emit: Emit): Promise<void> {
+    public async send(socketId: string, userId: number, input: string, emit: Emit): Promise<void> {
         const text = typeof input === "string" ? input.trim() : "";
         if (!text) {
             emit("claude-error", "That message was empty, so nothing was sent.");
@@ -757,9 +809,15 @@ export class AnthropicAssistant {
             // screen, so a browser that reconnects mid-conversation would
             // otherwise be told it has no session for a chat box it is
             // looking at.
-            session = { history: [], busy: false, lastUsed: Date.now() };
+            session = { userId, history: [], busy: false, lastUsed: Date.now() };
             this.sessions.set(socketId, session);
             this.evictOldest();
+        }
+        // A conversation acts for the person who started it, and nobody else
+        // can speak into it.
+        if (session.userId !== userId) {
+            emit("claude-error", "This conversation belongs to someone else. Restart the assistant.");
+            return;
         }
         if (session.busy) {
             emit("claude-error", "The assistant is still answering the previous message. Wait for it to finish before sending another.");
@@ -869,7 +927,7 @@ export class AnthropicAssistant {
                 // Grey, so the client's own log-line styling picks it up and it
                 // reads as machinery rather than as the assistant speaking.
                 emit("claude-output", `\u001b[90m› ${call.name}\u001b[0m`);
-                const outcome = await this.runTool(call);
+                const outcome = await this.runTool(call, { userId: session.userId });
                 results.push({
                     type: "tool_result",
                     tool_use_id: call.id,
@@ -888,7 +946,7 @@ export class AnthropicAssistant {
         emit("claude-error", `The assistant used its ${MAX_TOOL_ROUNDS} tool calls for this message without finishing. Ask for one step at a time.`);
     }
 
-    private async runTool(call: Anthropic.ToolUseBlock): Promise<ToolOutcome> {
+    private async runTool(call: Anthropic.ToolUseBlock, who: Caller): Promise<ToolOutcome> {
         const tool = this.tools.find((candidate) => candidate.definition.name === call.name);
         if (!tool) {
             // Unreachable unless a definition and the table disagree, which is
@@ -899,7 +957,7 @@ export class AnthropicAssistant {
         this.log.info(`[Assistant] Tool ${call.name}`);
         try {
             const input = (call.input && typeof call.input === "object" ? call.input : {}) as Record<string, unknown>;
-            return await tool.run(input);
+            return await tool.run(input, who);
         } catch (e: any) {
             // A throwing tool must still return a result block, or the next
             // request is missing a tool_result and the API rejects the whole

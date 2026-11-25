@@ -1,0 +1,48 @@
+# Desktop packaging. No paid certificates yet: the Mac app is ad-hoc signed and the
+# Windows app is unsigned, so both warn on first launch (the downloads page says how
+# to open it). Builds never publish: the release script uploads (P10).
+appId: io.ezpipeline.app
+productName: EZPipeline
+copyright: Copyright (c) EZPipeline contributors, Apache 2.0
+electronVersion: 45.2.1
+directories:
+  output: dist
+  buildResources: build
+# The server's native modules (better-sqlite3, bcrypt) are in stage/server and were
+# rebuilt for this Electron by scripts/stage.mjs; the shell itself has none.
+npmRebuild: false
+toolsets:
+  appimage: "1.0.3"
+  nsis: "1.2.1"
+asar: true
+# The server goes in after packing (scripts/after-pack.mjs), node_modules and all.
+afterPack: scripts/after-pack.mjs
+# Only the shell goes in the asar. The server runs from plain files beside it.
+files:
+  - electron/**/*
+  - package.json
+  - "!**/node_modules/**"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - { target: dmg }
+    - { target: zip }
+  icon: build/icon.png
+  identity: "-"
+  hardenedRuntime: false
+win:
+  target:
+    - { target: nsis, arch: [x64] }
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false   # uninstalling never deletes pipelines or history
+linux:
+  category: Development
+  executableName: ezpipeline
+  icon: build/icon.png
+  target:
+    - { target: AppImage }
+publish: null
+artifactName: ezpipeline-${version}-${os}-${arch}.${ext}
